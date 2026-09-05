@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "Sky for Google Calendar",
+  "version": "0.1.0",
+  "description": "An ambient sky layer for Google Calendar. The vertical axis of the grid is already a clock; this colours it.",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://calendar.google.com/*",
+    "https://api.open-meteo.com/*",
+    "https://geocoding-api.open-meteo.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://calendar.google.com/calendar/*"
+      ],
+      "js": [
+        "src/settings.js",
+        "src/wmo.js",
+        "src/palette.js",
+        "src/solar.js",
+        "src/guard.js",
+        "src/weather.js",
+        "src/popover.js",
+        "src/content.js"
+      ],
+      "css": [
+        "src/sky.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "Sky"
+  }
+}

@@ -1,0 +1,72 @@
+<!doctype html>
+<meta charset="utf-8">
+<link rel="stylesheet" href="popup.css">
+<div id="head" class="head">
+  <div class="kicker">SKY</div>
+  <div id="place" class="place">Locating…</div>
+  <div id="cond" class="cond"></div>
+  <div id="suntimes" class="suntimes"></div>
+</div>
+
+<div class="body">
+  <div class="row">
+    <div class="lab">Weather layer<em>Off returns Google Calendar to stock, instantly</em></div>
+    <button class="sw" id="enabled" role="switch" aria-checked="true"><i></i></button>
+  </div>
+
+  <div class="row col">
+    <div class="lab">Location<em id="loclabel">—</em></div>
+    <div class="search">
+      <input id="q" type="text" placeholder="Search a town or city" autocomplete="off" spellcheck="false">
+      <ul id="results" class="results" hidden></ul>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="lab">Temperature</div>
+    <div class="seg" id="units" role="radiogroup">
+      <button data-v="auto">Auto</button><button data-v="c">°C</button><button data-v="f">°F</button>
+    </div>
+  </div>
+
+  <div class="row col">
+    <div class="lab">Atmospheric intensity<em id="intlabel">Standard</em></div>
+    <div class="steps" id="intensity" role="radiogroup">
+      <button data-v="0">Off</button><button data-v="0.55">Subtle</button>
+      <button data-v="1">Standard</button><button data-v="1.35">Full</button>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="lab">Clouds and precipitation</div>
+    <button class="sw" id="weather" role="switch"><i></i></button>
+  </div>
+
+  <div class="row">
+    <div class="lab">Stars at night</div>
+    <button class="sw" id="stars" role="switch"><i></i></button>
+  </div>
+
+  <div class="row">
+    <div class="lab">Hourly temperatures<em>At the right edge of each column</em></div>
+    <button class="sw" id="hourlyTemps" role="switch"><i></i></button>
+  </div>
+
+  <div class="row">
+    <div class="lab">Detail on hover<em>Dwell on an hour to see the full forecast</em></div>
+    <button class="sw" id="detail" role="switch"><i></i></button>
+  </div>
+
+  <div class="row">
+    <div class="lab">Motion</div>
+    <div class="seg" id="motion" role="radiogroup">
+      <button data-v="system">System</button><button data-v="reduce">Reduce</button>
+    </div>
+  </div>
+</div>
+
+<div class="foot">
+  <span id="foot">Open-Meteo</span>
+  <span>no account, no tracking</span>
+</div>
+<script src="popup.js"></script>

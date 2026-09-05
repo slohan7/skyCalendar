@@ -1,0 +1,8 @@
+.DS_Store
+node_modules/
+*.log
+.render*.png
+.z*.png
+.r[0-9]*.png
+.pop*.png
+.pv*.png
