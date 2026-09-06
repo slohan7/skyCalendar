@@ -1,0 +1,202 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Sky harness</title>
+<!-- A stand-in for Google Calendar's week grid, built from the structure documented in
+     the README: role=grid > scroll viewport > role=row > role=gridcell, events absolutely
+     positioned at z-index 5. Close enough that content.js cannot tell the difference,
+     which is the point: the extension runs unmodified against it. -->
+<link rel="stylesheet" href="../src/sky.css">
+<style>
+  html, body { margin: 0; height: 100%; font: 12px Roboto, Arial, sans-serif; }
+  [role="main"] { height: 100%; display: flex; flex-direction: column; }
+  .heads { display: flex; padding-left: 56px; border-bottom: 1px solid #dadce0; }
+  [role="columnheader"] { flex: 1; text-align: center; padding: 6px 0 4px; font-size: 11px; color: #70757a; }
+  [role="grid"] { flex: 1; background: #FFFFFF; overflow: hidden; }
+  .viewport { height: 100%; overflow-y: auto; }
+  [role="row"] { display: flex; padding-left: 56px; height: 1200px; position: relative; }
+  [role="gridcell"] { flex: 1; position: relative; border-left: 1px solid #dadce0; }
+  .ev {
+    position: absolute; z-index: 5; left: 2px; right: 6px;
+    border-radius: 4px; padding: 2px 4px; color: #fff; font-size: 11px;
+    overflow: hidden; box-sizing: border-box;
+  }
+</style>
+
+<div role="main">
+  <div class="heads" id="heads"></div>
+  <div role="grid">
+    <div class="viewport"><div role="row" id="row"></div></div>
+  </div>
+</div>
+
+<script src="fixture.js"></script>
+<script>
+// ---- instrumentation, installed before a single line of the extension runs ----------
+// Forced layout is the cost that does not show up in a flame chart as "our" time: it
+// shows up as Google's next frame being late. Counting the reads is the honest proxy.
+window.__probe = { rect: 0, style: 0, added: 0, longtasks: 0, longtaskMs: 0 };
+const _rect = Element.prototype.getBoundingClientRect;
+Element.prototype.getBoundingClientRect = function () { window.__probe.rect++; return _rect.call(this); };
+const _style = window.getComputedStyle;
+window.getComputedStyle = function (...a) { window.__probe.style++; return _style.apply(window, a); };
+try {
+  new PerformanceObserver(list => {
+    for (const e of list.getEntries()) { window.__probe.longtasks++; window.__probe.longtaskMs += e.duration; }
+  }).observe({ entryTypes: ['longtask'] });
+} catch {}
+
+// ---- the grid ------------------------------------------------------------------------
+const COLS = 7;
+const pad = n => String(n).padStart(2, '0');
+const isoOf = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const datekey = d => ((d.getFullYear() - 1970) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+
+const start = new Date(); start.setDate(start.getDate() - start.getDay());
+const dates = [];
+const row = document.getElementById('row'), heads = document.getElementById('heads');
+// Google's own palette, so the separation guard has real fills to measure.
+const FILLS = ['#039BE5', '#7986CB', '#33B679', '#8E24AA', '#E67C73', '#F6BF26', '#F4511E', '#616161'];
+for (let i = 0; i < COLS; i++) {
+  const d = new Date(start); d.setDate(d.getDate() + i);
+  dates.push(isoOf(d));
+  const h = document.createElement('div');
+  h.setAttribute('role', 'columnheader');
+  h.textContent = d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric' });
+  heads.appendChild(h);
+  const cell = document.createElement('div');
+  cell.setAttribute('role', 'gridcell');
+  cell.setAttribute('data-datekey', String(datekey(d)));
+  row.appendChild(cell);
+}
+
+// A realistic working week: five or six blocks a day, none of them contrived.
+function seedEvents(perDay = 6) {
+  [...row.children].forEach((cell, c) => {
+    cell.querySelectorAll('.ev').forEach(n => n.remove());
+    for (let i = 0; i < perDay; i++) {
+      const startH = 8 + ((c * 3 + i * 2.5) % 10);
+      const len = 0.5 + ((i * 7 + c) % 3) * 0.5;
+      const ev = document.createElement('div');
+      ev.className = 'ev';
+      ev.setAttribute('data-eventid', `e${c}_${i}`);
+      ev.style.top = `${(startH / 24) * 100}%`;
+      ev.style.height = `${(len / 24) * 100}%`;
+      ev.style.background = FILLS[(c + i) % FILLS.length];
+      ev.textContent = 'Meeting';
+      cell.appendChild(ev);
+    }
+  });
+}
+seedEvents();
+</script>
+
+<script src="../src/settings.js"></script>
+<script src="../src/wmo.js"></script>
+<script src="../src/palette.js"></script>
+<script src="../src/solar.js"></script>
+<script src="../src/guard.js"></script>
+<script src="../src/weather.js"></script>
+<script src="../src/flyers.js" onerror="window.__noFlyers = true"></script>
+<script src="../src/popover.js"></script>
+<script>
+// The forecast comes from the fixture, so the harness never touches the network and a
+// run is reproducible. Everything else about the extension is the shipping code.
+const S = (window.__SkyCal = window.__SkyCal || {});
+S.getForecast = async () => window.__skyFixture(dates.concat(
+  dates.map(d => { const x = new Date(d + 'T00:00:00'); x.setDate(x.getDate() + 7); return isoOf(x); })));
+S.settings = async () => Object.assign({}, S.DEFAULTS, window.__cfgOverride || {},
+                                       { lat: 42.28, lon: -83.74, label: 'Ann Arbor' });
+S.cfgSync = () => Object.assign({}, S.DEFAULTS, window.__cfgOverride || {});
+</script>
+<script src="../src/content.js"></script>
+
+<script>
+// ---- the harness API the runner drives ----------------------------------------------
+// Count the whole subtree, not the root that carried it in. Appending one wrapper that
+// holds four hundred stars is four hundred nodes of work and four hundred animations
+// restarted from zero, which is what the flash is.
+new MutationObserver(ms => {
+  for (const m of ms) {
+    const t = m.target;
+    if (t.nodeType !== 1) continue;
+    if (!(String(t.className).startsWith('skycal-') || t.closest('.skycal-field, .skycal-flyers'))) continue;
+    for (const n of m.addedNodes)
+      window.__probe.added += n.nodeType === 1 ? 1 + n.querySelectorAll('*').length : 1;
+  }
+}).observe(document.body, { childList: true, subtree: true });
+
+const grid = document.querySelector('[role="grid"]');
+window.__h = {
+  dates,
+  reset() { window.__probe = { rect: 0, style: 0, added: 0, longtasks: 0, longtaskMs: 0 }; },
+  probe() { return { ...window.__probe }; },
+  nodes() { return document.querySelectorAll('.skycal-field *, .skycal-flyers *').length; },
+  fields() { return document.querySelectorAll('.skycal-field').length; },
+
+  async render(reason = 'test') {
+    const t = performance.now();
+    await window.__SkyCal.render(reason);
+    return performance.now() - t;
+  },
+
+  // A cursor sweeping the grid, which is what a person does all day long.
+  mousemoves(n = 120) {
+    const r = grid.getBoundingClientRect();
+    const t = performance.now();
+    for (let i = 0; i < n; i++) {
+      const x = r.left + 40 + ((i * 37) % Math.max(1, r.width - 80));
+      const y = r.top + 40 + ((i * 53) % Math.max(1, r.height - 80));
+      dispatchEvent(new MouseEvent('mousemove', { clientX: x, clientY: y, bubbles: true }));
+    }
+    return performance.now() - t;
+  },
+
+  // Google mutating its own DOM: hover states, chips re-rendering, the mini calendar.
+  churn(n = 30) {
+    const host = row.firstElementChild;
+    for (let i = 0; i < n; i++) {
+      const junk = document.createElement('span');
+      junk.className = 'goog-noise';
+      host.appendChild(junk);
+      junk.remove();
+    }
+  },
+
+  // Wait for the debounce plus a couple of frames, so a scheduled render has landed.
+  settle(ms = 500) { return new Promise(r => setTimeout(r, ms)); },
+
+  // Repoint the fixture at different weather, or different settings, and repaint.
+  async setWeather(opts) {
+    const all = dates.concat(dates.map(d => { const x = new Date(d + 'T00:00:00'); x.setDate(x.getDate() + 7); return isoOf(x); }));
+    window.__SkyCal.getForecast = async () => window.__skyFixture(all, opts);
+    window.__SkyCal.unmount();
+    await window.__SkyCal.refresh();
+    await this.settle(300);
+  },
+  async setConfig(patch) { window.__cfgOverride = { ...(window.__cfgOverride || {}), ...patch }; await this.remount(); },
+  // The same change without the teardown. The popup's own path unmounts first, so this is
+  // the case that catches a setting missing from the repaint signature.
+  async setConfigLive(patch) {
+    window.__cfgOverride = { ...(window.__cfgOverride || {}), ...patch };
+    await window.__SkyCal.render('settings, no teardown');
+    await this.settle(250);
+  },
+  async remount() {
+    window.__SkyCal.unmount();
+    window.__SkyCal.clearSolarCache && window.__SkyCal.clearSolarCache();
+    await window.__SkyCal.render('reconfigure');
+    await this.settle(300);
+  },
+  seedEvents,
+  // Events actually changing, which must repaint. Alternates between two layouts, so
+  // calling it twice in a row is two real changes rather than one change and a no-op.
+  moveEvents() {
+    window.__flip = !window.__flip;
+    const k = window.__flip ? 0 : 2;
+    row.querySelectorAll('.ev').forEach((e, i) => { e.style.top = `${18 + ((i + k) % 9) * 4.5}%`; });
+  }
+};
+</script>
+
+<script src="perf.js"></script>
+<script src="checks.js"></script>

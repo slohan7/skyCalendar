@@ -73,27 +73,47 @@
   }
   S.hidePopover = hide;
 
-  // Resolver is supplied by content.js: given a point, it returns the column, hour and
-  // that hour's forecast, or null if the point is not over a painted day column.
-  S.enablePopover = function (resolve) {
-    if (armed) { S.resolvePoint = resolve; return; }
+  // Both resolvers are supplied by content.js. `hit` is cheap: which column, which hour,
+  // from cached rectangles. `describe` is not: it solves the day's solar geometry and
+  // composites the surface colour. The listener does no work of its own beyond recording
+  // where the cursor is; one frame later it runs `hit`, and `describe` runs once, inside
+  // the dwell, when the panel is actually about to be drawn.
+  //
+  // Before this split, a mousemove ran the whole chain. At sixty to a hundred and twenty
+  // events a second that is the extension quietly taxing every drag on the calendar.
+  S.enablePopover = function (hit, describe) {
+    S.hitPoint = hit;
+    S.describePoint = describe;
+    S.resolvePoint = (x, y) => describe(hit(x, y));
+    if (armed) return;
     armed = true;
-    S.resolvePoint = resolve;
 
-    addEventListener('mousemove', ev => {
+    let mx = 0, my = 0, queued = false;
+
+    function frame() {
+      queued = false;
       if (!S.popoverEnabled) return hide();
-      const ctx = S.resolvePoint(ev.clientX, ev.clientY);
-      if (!ctx) return hide();
-      const key = `${ctx.date}@${Math.floor(ctx.hour)}`;
-      if (key === current) { if (el) place(el, ev.clientX, ev.clientY); return; }
+      const h = S.hitPoint(mx, my);
+      if (!h) return hide();
+      const key = `${h.date}@${Math.floor(h.hour)}`;
+      if (key === current) { if (el) place(el, mx, my); return; }
       clearTimeout(timer);
-      const x = ev.clientX, y = ev.clientY;
+      const x = mx, y = my;
       timer = setTimeout(() => {
+        const ctx = S.describePoint(h);
+        if (!ctx) return hide();
         current = key;
         const p = render(ctx);
         p.classList.add(`${TAG}-pop-on`);
         place(p, x, y);
       }, DWELL);
+    }
+
+    addEventListener('mousemove', ev => {
+      mx = ev.clientX; my = ev.clientY;
+      if (queued) return;                 // at most one hit test per frame, never per event
+      queued = true;
+      requestAnimationFrame(frame);
     }, { passive: true });
 
     addEventListener('mousedown', hide, { passive: true, capture: true });

@@ -1,0 +1,201 @@
+// The assertions. `window.__h.run()` returns every check with the number behind it, and
+// a count of what failed. Budgets are set just above what the code currently does, so a
+// regression trips them rather than being absorbed.
+//
+// The numbers these replaced, measured on this same harness before any of it was fixed:
+//
+//   one Google DOM mutation   1279 of 1303 layer nodes replaced, 163ms of long task
+//   repaint, nothing changed  47.9ms, same full rebuild
+//   200 mousemoves            59.6ms, 763 forced layout reads
+//
+// The first of those is the flash. Replacing the nodes restarts every cloud drift, every
+// twinkle and every raindrop from zero, several times a minute, because Google touched
+// its own DOM.
+(() => {
+  const h = window.__h;
+  const $ = s => document.querySelector(s);
+  const $$ = s => [...document.querySelectorAll(s)];
+
+  // ---- what the sky must not spend ---------------------------------------------------
+  // Counts, not milliseconds. Wall-clock in a browser swings by a factor of three between
+  // consecutive identical runs -- a no-op repaint measured 4.3, 6.5, 6.0 and 16.8ms in
+  // four passes -- so a millisecond budget is a coin toss dressed up as an assertion. The
+  // work that drives the time is exact and deterministic: how many nodes were replaced,
+  // and how many times layout was forced. Timings are reported, and asserted on never.
+  const BUDGET = [
+    ['a repaint with nothing changed replaces no nodes',   p => p.noop.nodesRebuilt === 0,        p => p.noop.nodesRebuilt],
+    ['Google churning its own DOM replaces no nodes',      p => p.churn.nodesRebuilt === 0,       p => p.churn.nodesRebuilt],
+    ['Google churning its own DOM causes no long task',    p => p.churn.longtaskMs === 0,         p => p.churn.longtaskMs + 'ms'],
+    ['one read pass per column, not three',                p => p.noop.rectReads < 90,            p => p.noop.rectReads],
+    ['one style read per event, and only in that pass',    p => p.noop.styleReads <= 56,          p => p.noop.styleReads],
+    ['200 mousemoves force at most 8 layout reads',        p => p.mousemove.rectReads <= 8,       p => p.mousemove.rectReads],
+    ['200 mousemoves read no computed styles',             p => p.mousemove.styleReads === 0,     p => p.mousemove.styleReads],
+    ['moving events repaints only what depends on them',   p => p.eventsMoved.nodesRebuilt < 400, p => p.eventsMoved.nodesRebuilt]
+  ];
+
+  // ---- and what it must actually do --------------------------------------------------
+  const BEHAVIOUR = {
+    // The flash, stated directly: a cloud must be the same element afterwards, with its
+    // animation further along than it was. A rebuilt cloud starts again at zero.
+    async 'cloud animations survive a Google mutation'() {
+      const cloud = $('.skycal-cloud');
+      if (!cloud) return { skip: 'no clouds in this fixture' };
+      const t0 = cloud.getAnimations()[0]?.currentTime ?? 0;
+      h.churn(40);
+      await h.settle(650);
+      const t1 = cloud.getAnimations()[0]?.currentTime ?? 0;
+      return { ok: cloud.isConnected && t1 > t0, was: Math.round(t0), now: Math.round(t1) };
+    },
+
+    async 'the sun is a light source, not an overlay'() {
+      const halo = $('.skycal-sun-halo'), disc = $('.skycal-sun');
+      if (!halo || !disc) return { ok: false, why: 'no sun drawn' };
+      const blend = getComputedStyle(disc).mixBlendMode;
+      const alpha = Math.min(...$$('.skycal-sun').map(e => parseFloat(e.style.opacity)));
+      return { ok: blend === 'screen' && alpha >= 0.6 && !!$('.skycal-sun-core'),
+               blend, dimmestSun: alpha };
+    },
+
+    // A blend mode that reached Google's own pixels would be a bug, not an effect.
+    async 'the blend cannot escape our own field'() {
+      const f = $('.skycal-field');
+      return { ok: getComputedStyle(f).isolation === 'isolate' };
+    },
+
+    async 'flyers cross the whole week, above the sky and below events'() {
+      const layer = $('.skycal-flyers');
+      if (!layer) return { ok: false, why: 'no flyer layer' };
+      const cols = $$('[role="gridcell"]').filter(c => c.getBoundingClientRect().height > 500);
+      const onRow = cols.every(c => c.parentElement === layer.parentElement);
+      const z = +getComputedStyle(layer).zIndex;
+      const skyZ = +getComputedStyle($('.skycal-field')).zIndex;
+      return { ok: onRow && z > skyZ && z < 5, spansAllColumns: onRow, z, skyZ };
+    },
+
+    async 'a flyer is one element that removes itself'() {
+      $$('.skycal-flyers > *').forEach(n => n.remove());
+      const got = window.__SkyCal.flyNow();
+      const el = $('.skycal-flyers > .skycal-flyer:last-child');
+      const ok = got && $('.skycal-flyers').childElementCount === 1 && !!el
+              && el.getAnimations().length > 0
+              && parseFloat(el.style.animationDuration) > 15;
+      if (el) el.remove();
+      return { ok, seconds: el ? parseFloat(el.style.animationDuration) : null };
+    },
+
+    // The counter this replaced leaked a slot whenever a flyer left any way other than by
+    // finishing -- and two leaks stopped the traffic for the rest of the session. Removing
+    // eight in a row without ever letting animationend fire is exactly that failure.
+    async 'flyers keep spawning after one is removed abruptly'() {
+      const S = window.__SkyCal;
+      $$('.skycal-flyers > *').forEach(n => n.remove());
+      let spawned = 0;
+      for (let i = 0; i < 8; i++) {
+        if (!S.flyNow()) continue;
+        const el = $('.skycal-flyers > .skycal-flyer:last-child');
+        if (el) { spawned++; el.remove(); }          // removed WITHOUT animationend firing
+      }
+      return { ok: spawned === 8, spawned };
+    },
+
+    async 'turning the layer off leaves nothing behind'() {
+      window.__SkyCal.unmount();
+      const left = $$('.skycal-field, .skycal-flyers, .skycal-temp').length;
+      const rings = $$('[data-sky-ring]').length;
+      await h.render('remount');
+      await h.settle(400);
+      return { ok: left === 0 && rings === 0 && $$('.skycal-field').length > 0, left, rings };
+    }
+  };
+
+  // ---- and that every setting still means something ----------------------------------
+  // Nine controls, and the claim in settings.js is that every one of them does something.
+  // This is that claim, checked. It also covers the reason the sun was given its own slot
+  // rather than left inside the weather layer's group opacity: at any intensity below 1
+  // the group would isolate it, and a screen blend against a transparent backdrop is a
+  // no-op. If `subtle.sunBlend` ever comes back as anything but `screen`, that is why.
+  const snap = () => ({
+    fields: $$('.skycal-field').length,
+    flyerLayer: $$('.skycal-flyers').length,
+    suns: $$('.skycal-sun').length,
+    sunOpacity: $('.skycal-sun') ? +$('.skycal-sun').style.opacity : null,
+    sunBlend: $('.skycal-sun') ? getComputedStyle($('.skycal-sun')).mixBlendMode : null,
+    clouds: $$('.skycal-cloud').length,
+    stars: $$('.skycal-stars > i').length,
+    rain: $$('.skycal-rain').length,
+    storm: $$('.skycal-storm').length,
+    temps: $$('.skycal-hourtemp').length
+  });
+
+  h.matrix = async function () {
+    const before = snap();
+    const seen = {};
+    const step = async (name, fn) => { await fn(); seen[name] = snap(); };
+
+    await step('stormy',        () => h.setWeather({ cloudy: true, wet: true, storm: true }));
+    await step('clearAgain',    () => h.setWeather({}));
+    await step('subtle',        () => h.setConfig({ intensity: 0.55 }));
+    await step('noFlyers',      () => h.setConfig({ intensity: 1, flyers: false }));
+    await step('reducedMotion', () => h.setConfig({ flyers: true, motion: 'reduce' }));
+    await step('noWeather',     () => h.setConfig({ motion: 'system', weather: false }));
+    await step('noStars',       () => h.setConfig({ weather: true, stars: false }));
+    await step('noTemps',       () => h.setConfig({ stars: true, hourlyTemps: false }));
+    // Without a teardown: this is what catches a setting left out of the signature.
+    await step('noTempsLive',   () => h.setConfigLive({ hourlyTemps: false }));
+    await step('tempsBackLive', () => h.setConfigLive({ hourlyTemps: true }));
+    await step('subtleLive',    () => h.setConfigLive({ intensity: 0.55 }));
+    await step('disabled',      () => h.setConfig({ intensity: 1, enabled: false }));
+    await step('reenabled',     () => h.setConfig({ enabled: true }));
+
+    const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    return {
+      seen,
+      checks: [
+        ['an overcast day draws no sun and thins the stars',
+          seen.stormy.suns === 0 && seen.stormy.stars < before.stars && seen.stormy.clouds > before.clouds],
+        ['rain and storm are drawn only when they are forecast',
+          seen.stormy.rain > 0 && seen.stormy.storm > 0 && before.rain === 0 && before.storm === 0],
+        ['a forecast change leaves nothing of the old one behind',
+          same(seen.clearAgain, before)],
+        ['the sun still blends at every intensity',
+          seen.subtle.sunBlend === 'screen' && seen.subtle.sunOpacity < before.sunOpacity],
+        ['the flyers switch removes the layer',           seen.noFlyers.flyerLayer === 0],
+        ['motion off removes the layer, mid-flight or not', seen.reducedMotion.flyerLayer === 0],
+        ['the weather switch takes clouds and sun, not stars',
+          seen.noWeather.clouds === 0 && seen.noWeather.suns === 0 && seen.noWeather.stars > 0],
+        ['the stars switch takes stars, not clouds',
+          seen.noStars.stars === 0 && seen.noStars.clouds > 0],
+        ['the hourly temperature switch takes only those', seen.noTemps.temps === 0 && seen.noTemps.clouds > 0],
+        ['every setting is in the repaint signature, so it works without a teardown too',
+          seen.noTempsLive.temps === 0 && seen.tempsBackLive.temps > 0
+          && seen.subtleLive.sunOpacity < seen.tempsBackLive.sunOpacity],
+        ['off returns the calendar to stock',
+          seen.disabled.fields === 0 && seen.disabled.flyerLayer === 0 && seen.disabled.temps === 0],
+        ['and back on restores exactly what was there',    same(seen.reenabled, before)]
+      ]
+    };
+  };
+
+  h.run = async function () {
+    const perf = await h.perf();
+    const results = [];
+    for (const [name, pass, show] of BUDGET)
+      results.push({ name, ok: pass(perf), measured: show(perf) });
+    for (const [name, fn] of Object.entries(BEHAVIOUR)) {
+      const out = await fn();
+      results.push({ name, ok: out.skip ? null : !!out.ok, measured: out });
+    }
+    const mx = await h.matrix();
+    for (const [name, ok] of mx.checks) results.push({ name, ok, measured: '' });
+    const failed = results.filter(r => r.ok === false);
+    return {
+      passed: results.filter(r => r.ok === true).length,
+      failed: failed.length,
+      skipped: results.filter(r => r.ok === null).length,
+      failures: failed,
+      perf,
+      matrix: mx.seen,
+      results
+    };
+  };
+})();

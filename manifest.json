@@ -23,6 +23,7 @@
         "src/solar.js",
         "src/guard.js",
         "src/weather.js",
+        "src/flyers.js",
         "src/popover.js",
         "src/content.js"
       ],

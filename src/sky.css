@@ -109,7 +109,9 @@
 .skycal-cloud {
   position: absolute;
   /* blur is set per cloud, so each has its own softness */
-  will-change: transform;
+  /* No will-change here. A transform animation is promoted for its duration anyway, and
+     there can be three hundred of these on screen: pinning a permanent composited layer
+     to each one costs GPU memory all day for no gain. */
   animation-name: skycal-drift;
   animation-timing-function: ease-in-out;
   animation-iteration-count: infinite;
@@ -130,7 +132,7 @@
   position: absolute;
   left: 0; right: 0;
   overflow: hidden;
-  will-change: transform;
+  /* the ::before is what moves, so promoting this element promotes nothing */
 }
 
 .skycal-rain::before,
@@ -194,23 +196,77 @@
 }
 
 /* ---- the sun -------------------------------------------------------------- */
-/* Only on days clear enough to see one. A disc with a halo that breathes very slowly:
-   heat shimmer, not a rotating icon. */
+/* Only on days clear enough to see one, and now genuinely a light source rather than a
+   pale disc laid over the sky.
 
+   The fix that matters is `mix-blend-mode: screen`. Everything else in the layer paints
+   over the sky; light does not do that, it adds. Screened onto the daylight ramp the core
+   drives straight to white and the corona lifts the sky around it, which is what makes it
+   read as being IN the sky rather than behind a veil. The field sets `isolation: isolate`,
+   so the blend can never reach Google's own pixels; it stops at our own sky.
+
+   Two parts: a white-hot core with a hard falloff, and a corona three times its width
+   that carries the warmth outward. Both breathe, out of phase and at different rates, so
+   the edge shimmers rather than pulsing like an icon. */
+
+/* The warm half, painted normally. This is the part that touches the sky, and it is
+   deliberately much wider than the disc: light does not stop at the edge of the object. */
+.skycal-sun-halo {
+  position: absolute;
+  border-radius: 50%;
+  transform: scale(2.45);
+  background: radial-gradient(circle,
+    rgba(255,246,212,.80) 0 16%,
+    rgba(255,230,164,.46) 31%,
+    rgba(255,208,124,.23) 47%,
+    rgba(255,188,98,.09)  64%,
+    transparent 79%);
+  filter: blur(7px);
+  will-change: transform;
+  animation: skycal-corona 21s ease-in-out infinite alternate -5s;
+}
+
+/* The bright half, screened onto everything under it, so whatever the sky is doing the
+   sun is brighter than it. Held near white through 44% so there is an actual disc with
+   an edge, rather than the smear the old single gradient faded into by 72%. */
 .skycal-sun {
   position: absolute;
   border-radius: 50%;
-  background:
-    radial-gradient(circle, rgba(255,252,240,1) 0 26%, rgba(255,232,170,.92) 34%, rgba(255,208,120,.30) 52%, transparent 72%);
-  filter: blur(1.5px);
+  mix-blend-mode: screen;
   will-change: transform;
   animation: skycal-shimmer 13s ease-in-out infinite alternate;
 }
 
-@keyframes skycal-shimmer {
-  from { transform: scale(1);    filter: blur(1.5px) }
-  to   { transform: scale(1.09); filter: blur(2.6px) }
+.skycal-sun-core {
+  position: absolute;
+  inset: 0;
+  display: block;
+  border-radius: 50%;
+  background: radial-gradient(circle,
+    #FFFFFF        0 30%,
+    #FFFBEC        44%,
+    rgba(255,240,196,.90) 58%,
+    rgba(255,222,150,.44) 73%,
+    rgba(255,206,112,0)   89%);
+  filter: blur(.6px);
 }
+
+@keyframes skycal-shimmer {
+  from { transform: scale(1)    }
+  to   { transform: scale(1.06) }
+}
+/* Scale only. Opacity is set inline from the day's cloud cover, and a keyframe would
+   override it and throw the haze away. */
+@keyframes skycal-corona {
+  from { transform: scale(2.30) }
+  to   { transform: scale(2.66) }
+}
+
+/* The four standing slots inside the weather layer. They exist so that rebuilding the
+   clouds does not also rebuild the stars, and so that the sun is never inside a group
+   opacity: an isolated group has a transparent backdrop, and screening against nothing
+   gets you nothing. */
+.skycal-slot { position: absolute; inset: 0; }
 
 /* ---- the contextual layer: daily high and low in Google's own header ------ */
 
@@ -235,6 +291,7 @@
   .skycal-rain::before,
   .skycal-snow::before,
   .skycal-sun,
+  .skycal-sun-halo,
   .skycal-flash-a,
   .skycal-flash-b { animation: none; }
   .skycal-flash-a, .skycal-flash-b { opacity: 0 }
@@ -379,6 +436,7 @@
 .skycal-still .skycal-bloom-sunrise,
 .skycal-still .skycal-bloom-sunset,
 .skycal-still .skycal-sun,
+.skycal-still .skycal-sun-halo,
 .skycal-still .skycal-twinkle,
 .skycal-still .skycal-rain::before,
 .skycal-still .skycal-snow::before,
@@ -399,3 +457,113 @@
   .skycal-pop-cond em, .skycal-pop-foot { color: #7E8B9C; }
   .skycal-pop-rows, .skycal-pop-foot { border-top-color: rgba(255,255,255,.09); }
 }
+
+/* ---- traffic: aircraft and birds ------------------------------------------ */
+/* Mounted on the row that holds the day columns, not inside one, so a flyer crosses the
+   whole week instead of stopping at a column edge. Above the sky (z-index 0), below
+   events (z-index 5). No blend modes: this layer sits in Google's stacking context, not
+   inside our isolated field, and it is not going to reach into their pixels. */
+
+.skycal-flyers {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  overflow: hidden;
+  pointer-events: none;
+  contain: layout paint;
+}
+
+.skycal-flyer {
+  position: absolute;
+  left: 0;
+  will-change: transform;
+  animation-name: skycal-cross;
+  animation-timing-function: linear;
+  animation-fill-mode: both;
+  animation-iteration-count: 1;
+}
+
+/* One pass, edge to edge, with a little height gained or lost on the way. Nothing loops:
+   a flyer is created, it crosses, it is removed. */
+@keyframes skycal-cross {
+  from { transform: translate3d(var(--sky-from), 0, 0) }
+  to   { transform: translate3d(var(--sky-to), var(--sky-drift), 0) }
+}
+
+/* Direction lives on an inner element, so flipping a westbound flyer cannot collide with
+   the transform that is carrying it across. */
+.skycal-west .skycal-body,
+.skycal-west .skycal-bird { transform: scaleX(-1); }
+
+/* ---- aircraft ---- */
+.skycal-plane .skycal-body { position: relative; display: block; }
+.skycal-plane svg { display: block; fill: #6E7B92; opacity: .68; }
+.skycal-plane.skycal-night svg { fill: #7F8AA4; opacity: .40; }
+
+/* Drawn in behind the aircraft as it goes, and thinning out at the far end the way one
+   actually does. It is one gradient, not a particle system. */
+.skycal-contrail {
+  position: absolute;
+  right: 94%;
+  top: 42%;
+  height: 2.4px;
+  width: 210px;
+  border-radius: 2px;
+  background: linear-gradient(to left, rgba(255,255,255,.52), rgba(255,255,255,.22) 46%, transparent 97%);
+  /* A hard 1.6px rule read as a UI leader line pointing at an arrowhead. Vapour has no
+     edge: the blur is what stops it looking like a diagram. */
+  filter: blur(1.1px);
+  transform-origin: right center;
+  animation: skycal-contrail 11s ease-out both;
+}
+@keyframes skycal-contrail {
+  from { transform: scaleX(.02); opacity: 0 }
+  30%  { opacity: .85 }
+  to   { transform: scaleX(1);   opacity: .58 }
+}
+
+/* After dark there is no contrail worth drawing, only the anticollision beacon. */
+.skycal-beacon {
+  position: absolute;
+  right: 4%;
+  top: 42%;
+  width: 2.2px; height: 2.2px;
+  border-radius: 50%;
+  background: #FF5A47;
+  box-shadow: 0 0 5px 1.5px rgba(255,90,71,.65);
+  animation: skycal-beacon 2.6s steps(1, end) infinite;
+}
+@keyframes skycal-beacon {
+  0%, 8%   { opacity: 1 }
+  9%, 100% { opacity: 0 }
+}
+
+/* ---- birds ---- */
+.skycal-birds { color: #38445C; opacity: .5; }
+.skycal-bird {
+  position: absolute;
+  display: block;
+  transform-origin: center;
+  animation-name: skycal-flap;
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
+  animation-direction: alternate;
+}
+.skycal-bird svg { display: block; overflow: visible; }
+
+/* Squashing the glyph vertically is what a wingbeat looks like at nine pixels across.
+   Anything more literal becomes an emoji. */
+@keyframes skycal-flap {
+  from { transform: scaleY(.42) translateY(.6px) }
+  to   { transform: scaleY(1.15) translateY(-.6px) }
+}
+.skycal-west .skycal-bird { animation-name: skycal-flap-w; }
+@keyframes skycal-flap-w {
+  from { transform: scaleX(-1) scaleY(.42) translateY(.6px) }
+  to   { transform: scaleX(-1) scaleY(1.15) translateY(-.6px) }
+}
+
+/* Motion off, from the OS or from settings: no traffic at all. A plane that does not
+   move is a sticker. */
+@media (prefers-reduced-motion: reduce) { .skycal-flyers { display: none } }
+@media (forced-colors: active)          { .skycal-flyers { display: none } }
