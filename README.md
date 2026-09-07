@@ -8,8 +8,9 @@ date in between.
 Cloud cover buys clouds rather than draining colour out of the sky. Stars come out
 between civil dusk and civil dawn, thinned by how much cloud is in the way. Rain falls
 only during the hours it actually rains. Events are drawn at whatever opacity their own
-label can still afford, so the sky reads through them. Every minute or two an aircraft or a
-flock of birds crosses the week. Nothing is an icon.
+label can still afford, so the sky reads through them. There is nearly always an aircraft or
+a flock of birds crossing the week, and after dark the moon at the phase it is actually at.
+Nothing is an icon.
 
 Design file: <https://www.figma.com/design/1rmS2t7RsW98mWcjVgUPD1>
 
@@ -294,9 +295,12 @@ a browser swung between 4.3 and 16.8ms across four consecutive identical runs, a
 millisecond budget is a coin toss dressed up as an assertion. The work that drives the
 time — nodes replaced, layouts forced — is exact.
 
-The harness is not Google Calendar. It reproduces the DOM contract the extension depends
-on, which is what the extension is written against, but nothing here has been run on
-calendar.google.com.
+The harness is not Google Calendar. It reproduces the DOM contract the extension is
+written against, and the extension runs against it unmodified, but **no test in here has
+ever run on calendar.google.com** — every number and every check above is measured on the
+stand-in. The extension itself has been used on the real site, which is where two of the
+bugs listed above were reported from; it is not a substitute for the tests running there,
+and they do not.
 
 ## Two guards
 
