@@ -421,6 +421,10 @@
       const cs = getComputedStyle(el);
       s = { fill: cs.backgroundColor, ink: cs.color,
             inlineFill: el.style.backgroundColor, inlineInk: el.style.color,
+            // Google puts a border colour on the chip as well, and leaving it opaque
+            // while the fill goes see-through is what draws a hard line round every
+            // block. It is ours to manage now, which also means ours to put back.
+            inlineBorder: el.style.borderColor, inlineShadow: el.style.boxShadow,
             applied: el.style.backgroundColor };
       stock.set(el, s);
     }
@@ -431,6 +435,7 @@
     if (s) {
       el.style.backgroundColor = s.inlineFill;
       el.style.color = s.inlineInk;
+      el.style.borderColor = s.inlineBorder;
       s.applied = el.style.backgroundColor;
     }
     delete el.dataset.skyGlass;
@@ -450,10 +455,18 @@
 
   // The sun's placement, the hourly temperatures and the separation guard are the only
   // things that depend on where the events are, so they get their own signature.
+  //
+  // The marks are in here, and they have to be. Google throws event chips away and builds
+  // them again constantly, and a rebuilt chip at the same hour in the same colour has an
+  // identical signature by value while being, in fact, a different element carrying none
+  // of our treatment. Signing by value alone means a repaint is skipped and the new chip
+  // stays undressed -- which on a real calendar looks like events randomly snapping back
+  // to opaque. Reading a dataset attribute forces no layout, so this is nearly free.
   function eventSignature(m) {
     let out = '';
     for (const e of m.events)
-      out += `${e.id}:${e.top.toFixed(2)},${e.bottom.toFixed(2)},${Math.round(e.right)},${e.fill};`;
+      out += `${e.id}:${e.top.toFixed(2)},${e.bottom.toFixed(2)},${Math.round(e.right)},${e.fill}`
+           + `,${e.el.dataset.skyGlass || ''}${e.el.dataset.skyRing || ''}${e.el.dataset.skyInk || ''};`;
     return out;
   }
 
@@ -541,6 +554,10 @@
         if (temps) field.appendChild(temps);
       }
       applyGuard(sun, hoursFor, m, cfg);
+      // Signed again, now that the marks are on. This is the resting value: the next pass
+      // reads the same marks and matches, so the treatment settles in one repaint rather
+      // than alternating between dressed and undressed for ever.
+      now.evSig = eventSignature(m);
     }
 
     // ---- the focus band, which moves on its own and is one gradient string ------------
@@ -560,7 +577,11 @@
   let guardStats = { checked: 0, ringed: 0, worst: 99, glassed: 0, clearest: 1 };
   // How much of the block you are allowed to see through before legibility takes some of
   // it back. Off is stock Google, and is exactly stock: the inline styles go back.
-  const GLASS = { off: 1, tinted: 0.74, clear: 0.52 };
+  const GLASS = { off: 1, tinted: 0.74, clear: 0.52, outline: 0.12 };
+  // How hard the edge has to work. Outlined, it is the only thing saying where the block
+  // is, so it is asked for more; filled, the fill is still doing most of that job.
+  const EDGE_FLOOR = { outline: 3.0, clear: 2.1, tinted: 1.9 };
+  const EDGE_PX = { outline: 1.5, clear: 1, tinted: 1 };
   const forcedColors = () => {
     try { return matchMedia('(forced-colors: active)').matches; } catch { return false; }
   };
@@ -634,14 +655,17 @@
     const plateAt = plateAtFor(sun);
     const surfaceAt = m.surfaceAt || (m.surfaceAt = surfaceCache(hoursFor, anchors, plateAt));
     // High contrast mode has its own opinion about colour and it outranks ours.
-    const wanted = forcedColors() ? 1 : (GLASS[cfg.glass] ?? GLASS.off);
+    const level = forcedColors() ? 'off' : (GLASS[cfg.glass] != null ? cfg.glass : 'off');
+    const wanted = GLASS[level];
+    const outlined = level === 'outline';
+    const edgeFloor = EDGE_FLOOR[level], edgePx = EDGE_PX[level];
     for (const e of m.events) {
       if (e.height < 6) continue;
       const hour = Math.max(0, Math.min(24, (e.top + e.bottom) / 2));
       const surface = surfaceAt(hour);
 
       // ---- see-through ---------------------------------------------------------------
-      const glass = wanted < 1 ? S.glassFor(e.fill, e.ink, surface, wanted) : null;
+      const glass = wanted < 1 ? S.glassFor(e.fill, e.ink, surface, wanted, outlined) : null;
       let shown = null;
       if (glass) {
         e.el.style.backgroundColor = glass.css;
@@ -662,16 +686,31 @@
         unglass(e.el);
       }
 
-      // ---- and the edge it now needs -------------------------------------------------
-      const out = S.ringFor(e.fill, surface, shown);
+      // ---- the edge --------------------------------------------------------------------
+      // Two different jobs, and conflating them is what put a hard dark line round every
+      // block. With the fill see-through, the edge is deliberate and in the event's own
+      // colour, on every block. With the fill left alone, the edge is the old separation
+      // guard: an emergency, and it stays rare.
       guardStats.checked++;
-      if (out) {
-        e.el.style.boxShadow = `inset 0 0 0 1px ${out.ring}`;
+      if (glass) {
+        // Google's own border stays opaque while the fill goes translucent unless it is
+        // taken in hand, and that alone reads as a hard outline the extension never asked
+        // for. Ours replaces it rather than sitting on top of it.
+        const edge = S.edgeFor(e.fill, surface, edgeFloor);
+        e.el.style.borderColor = 'transparent';
+        e.el.style.boxShadow = `inset 0 0 0 ${edgePx}px ${edge}`;
         e.el.dataset.skyRing = '1';
         guardStats.ringed++;
-        guardStats.worst = Math.min(guardStats.worst, out.before);
-      } else if (e.el.dataset.skyRing) {
-        e.el.style.boxShadow = ''; delete e.el.dataset.skyRing;
+      } else {
+        const out = S.ringFor(e.fill, surface, shown);
+        if (out) {
+          e.el.style.boxShadow = `inset 0 0 0 1px ${out.ring}`;
+          e.el.dataset.skyRing = '1';
+          guardStats.ringed++;
+          guardStats.worst = Math.min(guardStats.worst, out.before);
+        } else if (e.el.dataset.skyRing) {
+          e.el.style.boxShadow = e.stock.inlineShadow; delete e.el.dataset.skyRing;
+        }
       }
     }
   }
@@ -798,7 +837,11 @@
 
   function unmount() {
     document.querySelectorAll(`.${TAG}-field, .${TAG}-temp, .${TAG}-flyers`).forEach(n => n.remove());
-    document.querySelectorAll('[data-sky-ring]').forEach(n => { n.style.boxShadow = ''; delete n.dataset.skyRing; });
+    document.querySelectorAll('[data-sky-ring]').forEach(n => {
+      const st = stock.get(n);
+      n.style.boxShadow = st ? st.inlineShadow : '';
+      delete n.dataset.skyRing;
+    });
     document.querySelectorAll('[data-sky-glass]').forEach(unglass);
     if (S.stopFlyers) S.stopFlyers();
     if (S.hidePopover) S.hidePopover();

@@ -70,16 +70,29 @@
   // opacity, this returns null and the block is left exactly as Google drew it.
   S.GLASS_TARGET = 4.5;                          // WCAG AA, and event labels are small text
 
-  S.glassFor = function (fillCss, inkCss, surface, wanted) {
+  S.glassFor = function (fillCss, inkCss, surface, wanted, outlined) {
     const fill = parseRgb(fillCss), ink = parseRgb(inkCss);
     if (!fill || !ink) return null;
     const target = Math.min(S.GLASS_TARGET, contrast(ink, fill));
-    // Google's own label first, then the smallest move that might work, in order. Their
-    // own text grey before pure white, and pure white before the near-black, so a label
-    // moves as little as the job allows. Flipping a white label to grey over a bright
-    // noon sky is not a liberty taken -- the thing behind it is no longer the colour that
-    // white was chosen against -- but it is still a change, and changes are rationed.
-    const inks = [ink, hexToRgb('#3C4043'), [1, 1, 1], hexToRgb('#202124')];
+    // Filled: Google's own label first, then the smallest move that might work. Their own
+    // text grey before pure white, and pure white before the near-black, so a label moves
+    // as little as the job allows. Flipping a white label to grey over a bright noon sky
+    // is not a liberty taken -- the thing behind it is no longer the colour white was
+    // chosen against -- but it is a change, and changes are rationed.
+    //
+    // Outlined: the event's own colour first, darkened for a bright sky and lightened for
+    // a dark one. With the fill gone the label is the only thing left carrying which
+    // calendar this is, so it should be that colour if that colour can be read at all.
+    //
+    // Google's own label is last on the outlined ladder rather than absent from it. It is
+    // the only rung guaranteed to clear at full opacity -- the target is defined as what
+    // that label achieves on that fill -- so leaving it out let blocks fall off the end
+    // and stay stock-opaque among their outlined neighbours. Last, because on an outlined
+    // block it is the least appropriate answer, not because it is the wrong one.
+    const inks = outlined
+      ? [shade(fill, 0.52), tint(fill, 0.62), shade(fill, 0.34), hexToRgb('#3C4043'),
+         [1, 1, 1], hexToRgb('#202124'), ink]
+      : [ink, hexToRgb('#3C4043'), [1, 1, 1], hexToRgb('#202124')];
     const inkLum = inks.map(lum);
     for (let a = wanted; ; a = Math.min(1, a + 0.05)) {
       const back = over(fill, surface, a);
@@ -87,14 +100,36 @@
       for (let i = 0; i < inks.length; i++) {
         if (ratio(inkLum[i], bl) >= target) {
           const [r, g, b] = fill.map(v => Math.round(v * 255));
+          const isOwn = contrast(inks[i], ink) < 1.02;
           return { alpha: +a.toFixed(2), ink: toHex(inks[i]), back,
-                   flipped: i > 0,        // i === 0 is Google's own label, left alone
+                   flipped: !isOwn,       // no need to touch a label we did not move
                    css: `rgba(${r}, ${g}, ${b}, ${+a.toFixed(2)})`,
                    ratio: +ratio(inkLum[i], bl).toFixed(2), target: +target.toFixed(2) };
         }
       }
       if (a >= 1) return null;                   // cannot be done: leave the block alone
     }
+  };
+
+  // The edge of a see-through block, in the event's own colour, walked away from the sky
+  // only as far as it has to be. This is not the separation guard below: that one is an
+  // emergency, fires rarely, and darkens a block that our own sky broke. This is
+  // deliberate, fires on every block, and is the thing that says where the event is once
+  // the fill has stopped saying it. A block outlined in a dark neutral is the "weird
+  // black line"; a block outlined in its own colour is a calendar.
+  S.edgeFor = function (fillCss, surface, floor) {
+    const fill = parseRgb(fillCss);
+    if (!fill) return null;
+    if (contrast(fill, surface) >= floor) return toHex(fill);      // its own colour will do
+    const away = lum(fill) > lum(surface);
+    let best = fill, bestC = contrast(fill, surface);
+    for (let k = 1; k <= 9; k++) {
+      const c = away ? tint(fill, k * 0.085) : shade(fill, 1 - k * 0.085);
+      const got = contrast(c, surface);
+      if (got > bestC) { best = c; bestC = got; }
+      if (got >= floor) return toHex(c);
+    }
+    return toHex(best);                        // as far as it goes, which is still better
   };
 
   // Returns a CSS colour for a 1px inset ring, or null if the block is fine as it is.

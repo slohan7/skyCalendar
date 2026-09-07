@@ -3,7 +3,7 @@
 const KEY = 'sky:settings';
 const DEFAULTS = {
   enabled: true, lat: null, lon: null, label: null, units: 'auto', intensity: 1,
-  weather: true, stars: true, flyers: true, glass: 'clear',
+  weather: true, stars: true, flyers: true, glass: 'outline',
   hourlyTemps: true, detail: 'hover', motion: 'system'
 };
 const $ = s => document.querySelector(s);
@@ -48,9 +48,10 @@ const INT_LABEL = { '0': 'Off · stock Google Calendar', '0.55': 'Subtle', '1': 
 // Each one says what it costs you, because the honest answer is that it costs legibility
 // and the extension buys it back per event rather than pretending it is free.
 const GLASS_LABEL = {
-  off:    'Off · Google\u2019s own solid blocks',
-  tinted: 'A hint of sky through each block',
-  clear:  'As clear as the label can stand'
+  off:     'Off · Google\u2019s own solid blocks',
+  tinted:  'A hint of sky through each block',
+  clear:   'As clear as the label can stand',
+  outline: 'No fill · the colour moves to the edge'
 };
 
 function paint() {
@@ -66,7 +67,7 @@ function paint() {
     $('#' + id).querySelectorAll('button').forEach(b =>
       b.setAttribute('aria-checked', String(b.dataset.v === val)));
   $('#intlabel').textContent = INT_LABEL[String(cfg.intensity)] || 'Standard';
-  $('#glasslabel').textContent = GLASS_LABEL[cfg.glass] || GLASS_LABEL.clear;
+  $('#glasslabel').textContent = GLASS_LABEL[cfg.glass] || GLASS_LABEL.outline;
   $('#loclabel').textContent = cfg.label || 'inferred from your timezone';
   document.body.style.opacity = cfg.enabled ? '1' : '.62';
 }

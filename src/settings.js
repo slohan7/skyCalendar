@@ -14,7 +14,7 @@
     weather:     true,          // clouds, precipitation, storms, sun disc
     stars:       true,
     flyers:      true,          // aircraft and birds, crossing every minute or two
-    glass:       'clear',       // off | tinted | clear -- how much sky shows through events
+    glass:       'outline',     // off | tinted | clear | outline -- how much sky shows through
     hourlyTemps: true,
     detail:      'hover',       // hover | off
     motion:      'system'       // system | reduce

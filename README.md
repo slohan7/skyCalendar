@@ -90,9 +90,15 @@ it stops at our own sky.
 
 ## See-through events
 
-Events are drawn at partial opacity so the sky reads through them. Three levels — off,
-tinted (0.74), clear (0.52) — and the level is a request, not a setting: it is where each
-block *starts*.
+Events are drawn at partial opacity so the sky reads through them. Four levels — off,
+tinted (0.74), clear (0.52), outline (0.12) — and the level is a request, not a setting:
+it is where each block *starts*.
+
+**Outline** is the default and the one worth having. The fill drops to a wash, the colour
+moves to a 1.5px edge, and the label takes the event's own colour darkened for a bright sky
+or lightened for a dark one. With the fill gone the label is the only thing left carrying
+which calendar an event belongs to, so it should be that colour if that colour can be read
+at all.
 
 Transparency is spent, not given. A block begins at the alpha the setting asked for and is
 pushed back toward opaque only as far as its own label needs, and the label is moved
@@ -121,9 +127,22 @@ about half the labels move to grey. A purple event at 05:42, over a sky still da
 that white is the only label that works, gets pushed back to 0.62 instead — it spends
 transparency to keep its label.
 
-The separation guard is the other half of this. A see-through block sits closer to the sky
-by construction, so it rings far more often now, and it should: the ring is the edge the
-glass needs, drawn in the event's own colour rather than the washed-out one on screen.
+### The edge, and the black line
+
+Two different jobs, and conflating them put a hard dark line under every block on the real
+calendar. The separation guard is an *emergency*: it fires rarely, on a block our own sky
+broke, and it darkens that block's colour to give it an edge back. Turning the fills
+see-through made every block qualify, so every block got a darkened neutral ring — which
+reads as a black line, not as a calendar.
+
+They are separate now. With the fill see-through, the edge is deliberate, in the event's
+own colour, on every block, walked away from the sky only as far as it has to be. With the
+fill left alone, the old guard applies and stays rare.
+
+Google also puts a border colour on the chip, and leaving that opaque while the fill goes
+translucent draws a hard outline the extension never asked for. It is managed now — set to
+transparent under glass, and put back verbatim when the layer comes off — so it cannot
+fight our edge whether or not Google set one.
 
 Two things this deliberately does not do. There is no `backdrop-filter`: blurring the sky
 behind a block defeats the point of seeing it, and forty blurred layers is exactly the
@@ -131,6 +150,19 @@ compositing cost the rest of this work went to remove. And nothing is predicted 
 light — CSS composites a translucent background in sRGB, gamma and all, so the solver does
 the arithmetic the browser will actually do rather than the arithmetic the rest of the
 colour code does.
+
+### What a signature has to cover
+
+The repaint signature is what makes the layer cheap, and it is also the thing most likely
+to be quietly wrong. Google throws event chips away and rebuilds them constantly. A rebuilt
+chip at the same hour, in the same colour, at the same size signs identically **by value**
+while being a different element carrying none of our treatment — so the repaint is skipped
+and the new chip stays undressed. On the harness that showed up as all forty-two events
+snapping back to opaque after a rebuild.
+
+So the signature includes the treatment marks, not just the geometry, and it is taken again
+after the treatment is applied — that second reading is the resting value, and without it
+the layer would alternate between dressed and undressed for ever.
 
 ## Traffic
 

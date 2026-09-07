@@ -34,6 +34,53 @@
   ];
 
   // ---- and what it must actually do --------------------------------------------------
+  async function legibilityAt(level) {
+      const S = window.__SkyCal, C = S.colour;
+      await h.setConfig({ glass: level });
+      const cells = $$('[role="gridcell"]').filter(c => c.getBoundingClientRect().height > 500);
+      const worst = { ratio: 99, id: null };
+      let checked = 0, seeThrough = 0, flipped = 0;
+      for (const cell of cells) {
+        const date = cell.querySelector('.skycal-field').dataset.date;
+        const box = cell.getBoundingClientRect(), H = box.height;
+        // The same solar day the painter used. Solving it the other way (from geometry
+        // rather than from the forecast's own sunrise) shifts every anchor and quietly
+        // models a different sky than the one the decisions were made against.
+        const day = window.__fc.daily[date];
+        const sun = day ? S.solarDay(date, day.sunrise, day.sunset, 42.28, -83.74)
+                        : S.solarDayComputed(date, 42.28, -83.74);
+        const anchors = [0, 3, sun.civilDawn, sun.sunrise, sun.sunrise + 0.55, 9, 12, 15, 17.5,
+                         sun.golden, sun.sunset, sun.civilDusk, sun.civilDusk + 0.8, 24]
+                        .map(x => Math.max(0, Math.min(24, x)));
+        const plateAt = S.plateAt(sun);
+        const hoursFor = x => window.__fc.hourly[`${date}T${String(Math.max(0, Math.min(23, Math.round(x)))).padStart(2, '0')}:00`] || null;
+        for (const el of cell.querySelectorAll('[data-eventid]')) {
+          const r = el.getBoundingClientRect();
+          if (r.height < 6) continue;
+          const drew = window.__stockFill.get(el.getAttribute('data-eventid'));
+          const stockFill = C.hexToRgb(drew.fill), stockInk = C.hexToRgb(drew.ink);
+          const target = Math.min(S.GLASS_TARGET, C.contrast(stockInk, stockFill));
+
+          const cs = getComputedStyle(el);
+          const m = cs.backgroundColor.match(/[\d.]+/g).map(Number);
+          const alpha = m.length > 3 ? m[3] : 1;
+          const ink = C.parseRgb(cs.color);
+          const hour = Math.max(0, Math.min(24, ((r.top + r.bottom) / 2 - box.top) / H * 24));
+          const surface = S.surfaceAt(hour, hoursFor, anchors, plateAt);
+          const back = C.over(stockFill, surface, alpha);
+          const got = C.contrast(ink, back);
+
+          checked++;
+          if (alpha < 0.999) seeThrough++;
+          if (C.contrast(ink, stockInk) > 1.05) flipped++;
+          if (got + 0.02 < target && got < worst.ratio)
+            worst.ratio = +got.toFixed(2), worst.id = `${el.getAttribute('data-eventid')} @${hour.toFixed(1)}h wanted ${target.toFixed(2)}`;
+        }
+      }
+      return { ok: worst.id === null && checked > 0 && seeThrough > 0,
+               checked, seeThrough, labelsFlipped: flipped, worstFailure: worst.id };
+    }
+
   const BEHAVIOUR = {
     // The flash, stated directly: a cloud must be the same element afterwards, with its
     // animation further along than it was. A rebuilt cloud starts again at zero.
@@ -103,50 +150,11 @@
     // the surface the extension itself models, and compared against what stock Google
     // gives that block. Nothing here asks the extension what it thinks it did.
     async 'no see-through event is harder to read than stock Google'() {
-      const S = window.__SkyCal, C = S.colour;
-      await h.setConfig({ glass: 'clear' });
-      const cells = $$('[role="gridcell"]').filter(c => c.getBoundingClientRect().height > 500);
-      const worst = { ratio: 99, id: null };
-      let checked = 0, seeThrough = 0, flipped = 0;
-      for (const cell of cells) {
-        const date = cell.querySelector('.skycal-field').dataset.date;
-        const box = cell.getBoundingClientRect(), H = box.height;
-        // The same solar day the painter used. Solving it the other way (from geometry
-        // rather than from the forecast's own sunrise) shifts every anchor and quietly
-        // models a different sky than the one the decisions were made against.
-        const day = window.__fc.daily[date];
-        const sun = day ? S.solarDay(date, day.sunrise, day.sunset, 42.28, -83.74)
-                        : S.solarDayComputed(date, 42.28, -83.74);
-        const anchors = [0, 3, sun.civilDawn, sun.sunrise, sun.sunrise + 0.55, 9, 12, 15, 17.5,
-                         sun.golden, sun.sunset, sun.civilDusk, sun.civilDusk + 0.8, 24]
-                        .map(x => Math.max(0, Math.min(24, x)));
-        const plateAt = S.plateAt(sun);
-        const hoursFor = x => window.__fc.hourly[`${date}T${String(Math.max(0, Math.min(23, Math.round(x)))).padStart(2, '0')}:00`] || null;
-        for (const el of cell.querySelectorAll('[data-eventid]')) {
-          const r = el.getBoundingClientRect();
-          if (r.height < 6) continue;
-          const drew = window.__stockFill.get(el.getAttribute('data-eventid'));
-          const stockFill = C.hexToRgb(drew.fill), stockInk = C.hexToRgb(drew.ink);
-          const target = Math.min(S.GLASS_TARGET, C.contrast(stockInk, stockFill));
+      return legibilityAt('clear');
+    },
 
-          const cs = getComputedStyle(el);
-          const m = cs.backgroundColor.match(/[\d.]+/g).map(Number);
-          const alpha = m.length > 3 ? m[3] : 1;
-          const ink = C.parseRgb(cs.color);
-          const hour = Math.max(0, Math.min(24, ((r.top + r.bottom) / 2 - box.top) / H * 24));
-          const surface = S.surfaceAt(hour, hoursFor, anchors, plateAt);
-          const back = C.over(stockFill, surface, alpha);
-          const got = C.contrast(ink, back);
-
-          checked++;
-          if (alpha < 0.999) seeThrough++;
-          if (C.contrast(ink, stockInk) > 1.05) flipped++;
-          if (got + 0.02 < target && got < worst.ratio)
-            worst.ratio = +got.toFixed(2), worst.id = `${el.getAttribute('data-eventid')} @${hour.toFixed(1)}h wanted ${target.toFixed(2)}`;
-        }
-      }
-      return { ok: worst.id === null && checked > 0 && seeThrough > 0,
-               checked, seeThrough, labelsFlipped: flipped, worstFailure: worst.id };
+    async 'and nor is an outlined one, where there is almost no fill left'() {
+      return legibilityAt('outline');
     },
 
     // The point of the feature. If nothing ended up see-through it passed the check above
@@ -162,18 +170,57 @@
                clearest: Math.min(...a) };
     },
 
-    // Tinted has to be tinted: less sky than clear, more than off.
-    async 'the three levels are actually three levels'() {
+    // Each level has to be its own level, in order.
+    async 'the four levels are actually four levels'() {
       const mean = () => { const a = $$('[data-eventid]').map(e => {
           const m = getComputedStyle(e).backgroundColor.match(/[\d.]+/g).map(Number);
           return m.length > 3 ? m[3] : 1; });
         return a.reduce((x, y) => x + y, 0) / a.length; };
-      await h.setConfig({ glass: 'clear' });  const clear = mean();
-      await h.setConfig({ glass: 'tinted' }); const tinted = mean();
-      await h.setConfig({ glass: 'off' });    const off = mean();
-      await h.setConfig({ glass: 'clear' });
-      return { ok: clear < tinted && tinted < off && off === 1,
-               clear: +clear.toFixed(3), tinted: +tinted.toFixed(3), off };
+      await h.setConfig({ glass: 'outline' }); const outline = mean();
+      await h.setConfig({ glass: 'clear' });   const clear = mean();
+      await h.setConfig({ glass: 'tinted' });  const tinted = mean();
+      await h.setConfig({ glass: 'off' });     const off = mean();
+      await h.setConfig({ glass: 'outline' });
+      return { ok: outline < clear && clear < tinted && tinted < off && off === 1,
+               outline: +outline.toFixed(3), clear: +clear.toFixed(3),
+               tinted: +tinted.toFixed(3), off };
+    },
+
+    // The "weird black line": Google's border stayed opaque while the fill went
+    // see-through, and the separation guard -- built to fire rarely, on an emergency --
+    // was firing on every block and painting a darkened neutral round it. Every edge on a
+    // see-through block should now be the event's own colour, not a dark neutral.
+    async 'no block is outlined in a colour that is not its own'() {
+      const C = window.__SkyCal.colour;
+      await h.setConfig({ glass: 'outline' });
+      const off = [];
+      for (const el of $$('[data-eventid]')) {
+        const cs = getComputedStyle(el);
+        const m = cs.boxShadow.match(/rgba?\([^)]*\)/);
+        if (!m) { off.push('no edge'); continue; }
+        const edge = C.parseRgb(m[0]);
+        const own = C.parseRgb(window.__SkyCal.stockOf(el).fill);
+        // same hue family: the edge is that colour walked lighter or darker, never a grey
+        const chroma = c => Math.max(...c) - Math.min(...c);
+        const greyish = chroma(edge) < 0.06 && chroma(own) > 0.12;
+        // and Google's own border must not still be sitting there at full strength
+        const borderOpaque = C.parseRgb(cs.borderTopColor) &&
+                             !/transparent|, ?0\)/.test(cs.borderTopColor);
+        if (greyish || borderOpaque) off.push(el.getAttribute('data-eventid'));
+      }
+      return { ok: off.length === 0, wrong: off.slice(0, 4), n: off.length };
+    },
+
+    // Outlined has to actually be outlined: a real edge, and a label that still reads.
+    async 'outlined blocks keep an edge and a readable label'() {
+      await h.setConfig({ glass: 'outline' });
+      const els = $$('[data-eventid]');
+      const withEdge = els.filter(e => /inset/.test(getComputedStyle(e).boxShadow));
+      const alphas = els.map(e => {
+        const m = getComputedStyle(e).backgroundColor.match(/[\d.]+/g).map(Number);
+        return m.length > 3 ? m[3] : 1; });
+      return { ok: withEdge.length === els.length && Math.min(...alphas) <= 0.14,
+               blocks: els.length, edged: withEdge.length, clearest: Math.min(...alphas) };
     },
 
     // Off means Google's own blocks back, byte for byte, not "something close".
@@ -213,6 +260,23 @@
       await h.render('reseed');
       await h.settle(250);
       return { ok, before, became: `rgb(${now.r}, ${now.g}, ${now.b})`, alpha: m[3] ?? 1 };
+    },
+
+    // Google throws chips away and rebuilds them constantly. A rebuilt chip at the same
+    // hour in the same colour signs identically by value while being a different element
+    // carrying none of our treatment, and skipping that repaint is what makes events snap
+    // back to opaque on a real calendar.
+    async 'a chip rebuilt with identical geometry is dressed again'() {
+      await h.setConfig({ glass: 'outline' });
+      const dressedBefore = $$('[data-sky-glass]').length;
+      h.seedEvents();                        // same ids, same hours, same colours, new nodes
+      await h.render('rebuilt');
+      await h.settle(300);
+      const after = $$('[data-sky-glass]').length;
+      const opaque = $$('[data-eventid]').filter(e =>
+        !/rgba/.test(getComputedStyle(e).backgroundColor)).length;
+      return { ok: after === dressedBefore && after > 0 && opaque === 0,
+               dressedBefore, after, leftOpaque: opaque };
     },
 
     async 'turning the layer off leaves nothing behind'() {
