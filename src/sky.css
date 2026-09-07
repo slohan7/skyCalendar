@@ -458,6 +458,21 @@
   .skycal-pop-rows, .skycal-pop-foot { border-top-color: rgba(255,255,255,.09); }
 }
 
+/* ---- see-through events --------------------------------------------------- */
+/* Only blocks whose label the solver actually had to flip, and only for colour. Google
+   colours a chip and lets the inside inherit, but some chips give the time its own
+   lighter shade of the same colour -- which stops meaning "lighter" the moment the
+   colour above it has moved to the other end of the scale. */
+
+[data-sky-ink] * { color: inherit !important; }
+
+/* High contrast has its own opinion about colour and it outranks ours. The solver already
+   declines to run here; this is the belt to that pair of braces. */
+@media (forced-colors: active) {
+  [data-sky-glass] { background-color: revert !important; }
+  [data-sky-ink] * { color: revert !important; }
+}
+
 /* ---- traffic: aircraft and birds ------------------------------------------ */
 /* Mounted on the row that holds the day columns, not inside one, so a flyer crosses the
    whole week instead of stopping at a column edge. Above the sky (z-index 0), below

@@ -32,13 +32,33 @@
     ]
   };
 
-  // Plate opacity by fraction of the day. Thinnest at dawn and dusk, where the colour
-  // is worth the most and the event density is lowest. See "the contrast guard".
-  S.PLATE = [
-    [0.00, 0.24], [0.22, 0.28], [0.30, 0.40], [0.38, 0.44],
-    [0.50, 0.45], [0.68, 0.44], [0.78, 0.34], [0.83, 0.25],
-    [0.88, 0.22], [1.00, 0.24]
+  // Plate opacity through the day. Thinnest at dawn and dusk, where the colour is worth
+  // the most and the event density is lowest. See "the contrast guard".
+  //
+  // One table, and it has to stay one table. There were three: this one, keyed by
+  // fraction of day and used by nothing; the one buildPlate drew, running 0.30 to 0.52;
+  // and the one the guard modelled, running 0.24 to 0.45. So the guard had been measuring
+  // event legibility against a plate about 0.07 thinner than the plate on the screen.
+  // Conservative in that direction, but wrong, and see-through events cannot be solved at
+  // all against a surface model that does not match what is drawn.
+  //
+  // Anchored on the solar day rather than on clock hours, because that is what the plate
+  // follows: [hours-since-midnight, alpha], where four of the hours move with the sun.
+  S.plateStops = sun => [
+    [0, .34], [sun.civilDawn, .36], [sun.sunrise + 1, .48], [9, .51], [12, .52],
+    [16, .51], [sun.golden, .42], [sun.sunset, .32], [sun.civilDusk, .30], [24, .34]
   ];
+
+  // The same table, read as a function of the hour. This is what the guards ask.
+  S.plateAt = sun => {
+    const pp = S.plateStops(sun);
+    return h => {
+      let i = 0; while (i < pp.length - 2 && pp[i + 1][0] < h) i++;
+      const span = Math.max(1e-6, pp[i + 1][0] - pp[i][0]);
+      const t = Math.max(0, Math.min(1, (h - pp[i][0]) / span));
+      return pp[i][1] + (pp[i + 1][1] - pp[i][1]) * t;
+    };
+  };
 
   // Warm light falling on the calendar surface, peaking at sunrise and through
   // golden hour. Layered above the plate, not behind it.

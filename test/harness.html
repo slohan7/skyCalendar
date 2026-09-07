@@ -56,6 +56,15 @@ const dates = [];
 const row = document.getElementById('row'), heads = document.getElementById('heads');
 // Google's own palette, so the separation guard has real fills to measure.
 const FILLS = ['#039BE5', '#7986CB', '#33B679', '#8E24AA', '#E67C73', '#F6BF26', '#F4511E', '#616161'];
+// Whichever of Google's two label colours actually reads on that fill, which is how they
+// choose it: white on the dark hues, #3C4043 on Banana and the like.
+const INK = Object.fromEntries(FILLS.map(f => {
+  const lin = v => (v <= .04045 ? v / 12.92 : Math.pow((v + .055) / 1.055, 2.4));
+  const L = h => { const n = parseInt(h.slice(1), 16);
+    return .2126 * lin((n >> 16) / 255) + .7152 * lin(((n >> 8) & 255) / 255) + .0722 * lin((n & 255) / 255); };
+  const c = (a, b) => (Math.max(a, b) + .05) / (Math.min(a, b) + .05);
+  return [f, c(L('#ffffff'), L(f)) >= c(L('#3c4043'), L(f)) ? '#ffffff' : '#3c4043'];
+}));
 for (let i = 0; i < COLS; i++) {
   const d = new Date(start); d.setDate(d.getDate() + i);
   dates.push(isoOf(d));
@@ -70,19 +79,34 @@ for (let i = 0; i < COLS; i++) {
 }
 
 // A realistic working week: five or six blocks a day, none of them contrived.
+window.__stockFill = new Map();
 function seedEvents(perDay = 6) {
   [...row.children].forEach((cell, c) => {
     cell.querySelectorAll('.ev').forEach(n => n.remove());
     for (let i = 0; i < perDay; i++) {
-      const startH = 8 + ((c * 3 + i * 2.5) % 10);
+      // Two of the six sit outside the working day, because a block at four in the
+      // morning is over a near-black sky and a block at noon is over a bright one, and a
+      // see-through event has to survive both. Seeding only 08:00-18:00 tests one of them.
+      const startH = i === 0 ? 3.5 + c * 0.4
+                   : i === 1 ? 21 + (c % 3) * 0.7
+                   : 8 + ((c * 3 + i * 2.5) % 10);
       const len = 0.5 + ((i * 7 + c) % 3) * 0.5;
       const ev = document.createElement('div');
       ev.className = 'ev';
       ev.setAttribute('data-eventid', `e${c}_${i}`);
       ev.style.top = `${(startH / 24) * 100}%`;
       ev.style.height = `${(len / 24) * 100}%`;
-      ev.style.background = FILLS[(c + i) % FILLS.length];
+      const fill = FILLS[(c + i) % FILLS.length];
+      ev.style.background = fill;
+      // Google does not put white on everything -- Banana and Citron get dark text. Using
+      // white throughout made the solver look far more drastic than it is, because it was
+      // being asked to rescue labels Google would never have written in white.
+      ev.style.color = INK[fill];
       ev.textContent = 'Meeting';
+      // The harness knows what it drew. That is the independent source of truth the
+      // legibility check measures against -- it never asks the extension what it started
+      // from, because that is the thing being tested.
+      window.__stockFill.set(ev.getAttribute('data-eventid'), { fill, ink: INK[fill] });
       cell.appendChild(ev);
     }
   });
@@ -102,8 +126,8 @@ seedEvents();
 // The forecast comes from the fixture, so the harness never touches the network and a
 // run is reproducible. Everything else about the extension is the shipping code.
 const S = (window.__SkyCal = window.__SkyCal || {});
-S.getForecast = async () => window.__skyFixture(dates.concat(
-  dates.map(d => { const x = new Date(d + 'T00:00:00'); x.setDate(x.getDate() + 7); return isoOf(x); })));
+S.getForecast = async () => (window.__fc = window.__skyFixture(dates.concat(
+  dates.map(d => { const x = new Date(d + 'T00:00:00'); x.setDate(x.getDate() + 7); return isoOf(x); }))));
 S.settings = async () => Object.assign({}, S.DEFAULTS, window.__cfgOverride || {},
                                        { lat: 42.28, lon: -83.74, label: 'Ann Arbor' });
 S.cfgSync = () => Object.assign({}, S.DEFAULTS, window.__cfgOverride || {});
@@ -168,7 +192,7 @@ window.__h = {
   // Repoint the fixture at different weather, or different settings, and repaint.
   async setWeather(opts) {
     const all = dates.concat(dates.map(d => { const x = new Date(d + 'T00:00:00'); x.setDate(x.getDate() + 7); return isoOf(x); }));
-    window.__SkyCal.getForecast = async () => window.__skyFixture(all, opts);
+    window.__SkyCal.getForecast = async () => (window.__fc = window.__skyFixture(all, opts));
     window.__SkyCal.unmount();
     await window.__SkyCal.refresh();
     await this.settle(300);

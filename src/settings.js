@@ -1,4 +1,4 @@
-// Settings. Ten controls, and every one of them does something. A control that maps to
+// Settings. Eleven controls, and every one of them does something. A control that maps to
 // nothing is worse than a missing feature, so nothing here is aspirational.
 (() => {
   const S = (window.__SkyCal = window.__SkyCal || {});
@@ -14,6 +14,7 @@
     weather:     true,          // clouds, precipitation, storms, sun disc
     stars:       true,
     flyers:      true,          // aircraft and birds, crossing every minute or two
+    glass:       'clear',       // off | tinted | clear -- how much sky shows through events
     hourlyTemps: true,
     detail:      'hover',       // hover | off
     motion:      'system'       // system | reduce

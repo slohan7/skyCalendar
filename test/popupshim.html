@@ -1,6 +1,18 @@
 <!doctype html>
 <meta charset="utf-8">
-<link rel="stylesheet" href="popup.css">
+<title>Sky popup harness</title>
+<!-- The popup talks to chrome.storage and to nothing else, so standing in for that is
+     enough to render the real surface and click every real control. Same popup.html
+     markup, same popup.css, same popup.js. -->
+<link rel="stylesheet" href="../popup/popup.css">
+<script>
+  const mem = {};
+  window.chrome = { storage: { local: {
+    get: async k => (k === null ? { ...mem } : { [k]: mem[k] }),
+    set: async o => { Object.assign(mem, o); window.__saved = JSON.parse(JSON.stringify(mem)); }
+  } } };
+  window.__mem = mem;
+</script>
 <div id="head" class="head">
   <div class="kicker">SKY</div>
   <div id="place" class="place">Locating…</div>
@@ -81,4 +93,4 @@
   <span id="foot">Open-Meteo</span>
   <span>no account, no tracking</span>
 </div>
-<script src="popup.js"></script>
+<script src="../popup/popup.js"></script>

@@ -7,8 +7,9 @@ date in between.
 
 Cloud cover buys clouds rather than draining colour out of the sky. Stars come out
 between civil dusk and civil dawn, thinned by how much cloud is in the way. Rain falls
-only during the hours it actually rains. Every minute or two an aircraft or a flock of
-birds crosses the week. Nothing is an icon.
+only during the hours it actually rains. Events are drawn at whatever opacity their own
+label can still afford, so the sky reads through them. Every minute or two an aircraft or a
+flock of birds crosses the week. Nothing is an icon.
 
 Design file: <https://www.figma.com/design/1rmS2t7RsW98mWcjVgUPD1>
 
@@ -47,7 +48,7 @@ keeps them stable. Hour height is measured (`gridcell.height / 24`), never hardc
 |---|---|
 | daylight ramp | 14 anchors, four of them solar and different every day |
 | sunrise and sunset bloom | the horizon swelling and settling, out of phase with each other |
-| plate | white, 0.22–0.45, thinnest at dawn and dusk |
+| plate | white, 0.30–0.52, thinnest at dawn and dusk |
 | light wash | warm, peaking at sunrise and through golden hour |
 | stars · sun · cloud · rain and storm | four standing slots, driven by the hourly forecast |
 | temporal focus | quietens the hours you are nowhere near |
@@ -86,6 +87,50 @@ against the real sky — there is a test for exactly this.
 
 The blend cannot reach Google's own pixels. `.skycal-field` sets `isolation: isolate`, so
 it stops at our own sky.
+
+## See-through events
+
+Events are drawn at partial opacity so the sky reads through them. Three levels — off,
+tinted (0.74), clear (0.52) — and the level is a request, not a setting: it is where each
+block *starts*.
+
+Transparency is spent, not given. A block begins at the alpha the setting asked for and is
+pushed back toward opaque only as far as its own label needs, and the label is moved
+before the alpha is, because moving a label costs nothing and opacity costs sky. That is
+the order the plate and the separation guard already use.
+
+The label ladder is Google's own colour, then their text grey `#3C4043`, then white, then
+`#202124`: the smallest move that clears the bar. Flipping a white label to grey over a
+bright noon sky is not a liberty taken — the thing behind it is no longer the colour white
+was chosen against — but it is a change, and changes are rationed. Only a block whose
+label actually moved gets `color: inherit` forced on its contents, because Google gives a
+chip's title and its time two weights of one colour and flattening that everywhere to fix
+it in a few places is a bad trade.
+
+The invariant, and the only reason this is on by default:
+
+> **No block ends up harder to read than it is on stock Google.**
+
+The target is capped at whatever Google's own fill and label already achieve, so a chip
+sitting at 4.1:1 today is asked for 4.1, not 4.5 — we are not entitled to fail a bar
+Google never set, and not allowed to drop below one it did. If nothing clears the target
+even at full opacity, the block is left exactly as Google drew it.
+
+What that looks like in practice: on a clear week every block reaches the full 0.52 and
+about half the labels move to grey. A purple event at 05:42, over a sky still dark enough
+that white is the only label that works, gets pushed back to 0.62 instead — it spends
+transparency to keep its label.
+
+The separation guard is the other half of this. A see-through block sits closer to the sky
+by construction, so it rings far more often now, and it should: the ring is the edge the
+glass needs, drawn in the event's own colour rather than the washed-out one on screen.
+
+Two things this deliberately does not do. There is no `backdrop-filter`: blurring the sky
+behind a block defeats the point of seeing it, and forty blurred layers is exactly the
+compositing cost the rest of this work went to remove. And nothing is predicted in linear
+light — CSS composites a translucent background in sRGB, gamma and all, so the solver does
+the arithmetic the browser will actually do rather than the arithmetic the rest of the
+colour code does.
 
 ## Traffic
 
@@ -155,6 +200,13 @@ await __h.perf()     // just the measurements
 await __h.matrix()   // every setting, on and off
 ```
 
+The see-through check is deliberately not written in terms of what the extension thinks it
+did. It reads the fill and label the harness itself drew, composites them over the surface
+at that hour, and measures the result — so the thing under test is never also the witness.
+
+`test/popupshim.html` is the settings surface, standing in only for `chrome.storage`:
+same markup, same stylesheet, same script, so a control that does not wire up shows it.
+
 `getBoundingClientRect` and `getComputedStyle` are wrapped before the extension loads, so
 forced layout is counted rather than timed. Nothing asserts on milliseconds: wall-clock in
 a browser swung between 4.3 and 16.8ms across four consecutive identical runs, and a
@@ -166,6 +218,13 @@ on, which is what the extension is written against, but nothing here has been ru
 calendar.google.com.
 
 ## Two guards
+
+One table defines the plate, and it has to stay one. There were three: `S.PLATE` in
+palette.js, used by nothing; the one `buildPlate` drew, 0.30 to 0.52; and the one the
+guard modelled, 0.24 to 0.45. So the guard had been measuring event legibility against a
+plate about 0.07 thinner than the plate on the screen — conservative, but wrong, and
+see-through events cannot be solved at all against a surface model that does not match
+what is drawn.
 
 **Contrast guard** — text never sits on a known colour, it sits on the plate composited
 over whatever the sky is doing. Every label measures its own background and steps
@@ -204,6 +263,7 @@ beyond the geometry of the grid.
 
 ```js
 __SkyCal.render('manual')
+__SkyCal.stockOf(document.querySelector('[data-eventid]'))   // what Google drew, before us
 __SkyCal.refresh()                                  // throw the cached forecast away
 __SkyCal.unmount()
 __SkyCal.setLocation(42.28, -83.74, 'Ann Arbor')

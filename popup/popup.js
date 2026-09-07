@@ -3,7 +3,8 @@
 const KEY = 'sky:settings';
 const DEFAULTS = {
   enabled: true, lat: null, lon: null, label: null, units: 'auto', intensity: 1,
-  weather: true, stars: true, flyers: true, hourlyTemps: true, detail: 'hover', motion: 'system'
+  weather: true, stars: true, flyers: true, glass: 'clear',
+  hourlyTemps: true, detail: 'hover', motion: 'system'
 };
 const $ = s => document.querySelector(s);
 let cfg = { ...DEFAULTS };
@@ -38,11 +39,19 @@ toggle('stars', 'stars');
 toggle('flyers', 'flyers');
 toggle('hourlyTemps', 'hourlyTemps');
 toggle('detail', 'detail', on => (on ? 'hover' : 'off'));
+group('glass', 'glass');
 group('units', 'units');
 group('motion', 'motion');
 group('intensity', 'intensity', Number);
 
 const INT_LABEL = { '0': 'Off · stock Google Calendar', '0.55': 'Subtle', '1': 'Standard', '1.35': 'Full' };
+// Each one says what it costs you, because the honest answer is that it costs legibility
+// and the extension buys it back per event rather than pretending it is free.
+const GLASS_LABEL = {
+  off:    'Off · Google\u2019s own solid blocks',
+  tinted: 'A hint of sky through each block',
+  clear:  'As clear as the label can stand'
+};
 
 function paint() {
   const set = (id, on) => $('#' + id).setAttribute('aria-checked', String(on));
@@ -52,10 +61,12 @@ function paint() {
   set('flyers', cfg.flyers);
   set('hourlyTemps', cfg.hourlyTemps);
   set('detail', cfg.detail === 'hover');
-  for (const [id, val] of [['units', cfg.units], ['motion', cfg.motion], ['intensity', String(cfg.intensity)]])
+  for (const [id, val] of [['units', cfg.units], ['motion', cfg.motion], ['glass', cfg.glass],
+                           ['intensity', String(cfg.intensity)]])
     $('#' + id).querySelectorAll('button').forEach(b =>
       b.setAttribute('aria-checked', String(b.dataset.v === val)));
   $('#intlabel').textContent = INT_LABEL[String(cfg.intensity)] || 'Standard';
+  $('#glasslabel').textContent = GLASS_LABEL[cfg.glass] || GLASS_LABEL.clear;
   $('#loclabel').textContent = cfg.label || 'inferred from your timezone';
   document.body.style.opacity = cfg.enabled ? '1' : '.62';
 }

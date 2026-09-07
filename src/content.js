@@ -135,8 +135,7 @@
   }
 
   function buildPlate(sun) {
-    const pts = [[0, .34], [sun.civilDawn, .36], [sun.sunrise + 1, .48], [9, .51], [12, .52],
-                 [16, .51], [sun.golden, .42], [sun.sunset, .32], [sun.civilDusk, .30], [24, .34]];
+    const pts = S.plateStops(sun);
     return `linear-gradient(to bottom, ${pts.map(([h, a]) =>
       `rgba(255,255,255,${a}) ${pct(Math.max(0, Math.min(24, h))).toFixed(2)}%`).join(', ')})`;
   }
@@ -387,18 +386,57 @@
     for (const el of cell.querySelectorAll('[data-eventid]')) {
       const r = el.getBoundingClientRect();
       if (r.height < 1) continue;
+      const st = stockOf(el);
       events.push({
         el,
+        stock:  st,          // carried forward: asking again after we have written to the
+                             // element would trip the staleness check with our own write
         id:     el.getAttribute('data-eventid'),
         top:    (r.top - box.top) / H * 24,
         bottom: (r.bottom - box.top) / H * 24,
         right:  r.right - box.left,
         height: r.height,
-        fill:   getComputedStyle(el).backgroundColor
+        fill:   st.fill,                 // what Google drew, never what we last wrote
+        ink:    st.ink
       });
     }
     return { box, H, colW: box.width || 160, events };
   }
+
+  // What Google drew, captured the first time we see a block and never again -- once we
+  // have made it see-through its computed background is ours, and asking a second time
+  // would compound our own answer into the next one. The inline values are kept
+  // separately and verbatim, because that is what has to go back on unmount: Google sets
+  // these inline, and "restoring" by clearing them would strip the event's colour.
+  const stock = new WeakMap();
+  function stockOf(el) {
+    let s = stock.get(el);
+    // Caching this forever is wrong. Recolour an event and Google may write the new fill
+    // straight onto the same element, at which point our record of "what Google drew" is
+    // a colour that no longer exists -- and we would cheerfully paint it back over the
+    // one the user just chose. If the inline background is not the string we last wrote,
+    // somebody else has been here, and the record is thrown away.
+    if (s && el.style.backgroundColor !== s.applied) s = null;
+    if (!s) {
+      const cs = getComputedStyle(el);
+      s = { fill: cs.backgroundColor, ink: cs.color,
+            inlineFill: el.style.backgroundColor, inlineInk: el.style.color,
+            applied: el.style.backgroundColor };
+      stock.set(el, s);
+    }
+    return s;
+  }
+  function unglass(el) {
+    const s = stock.get(el);
+    if (s) {
+      el.style.backgroundColor = s.inlineFill;
+      el.style.color = s.inlineInk;
+      s.applied = el.style.backgroundColor;
+    }
+    delete el.dataset.skyGlass;
+    delete el.dataset.skyInk;
+  }
+  S.stockOf = el => stock.get(el) || null;      // console handle, and the tests use it
 
   // What the drawn sky is a function of. If none of this moved then the sky did not move
   // either, and tearing it down would only restart several hundred animations from zero.
@@ -408,7 +446,7 @@
   // silently does nothing until something else happens to force a repaint.
   const skySignature = (date, fc, m, loc, cfg) =>
     [date, fc.fetchedAt, Math.round(m.colW), Math.round(m.H), loc.lat, loc.lon,
-     cfg.intensity, cfg.weather, cfg.stars, cfg.motion, cfg.hourlyTemps].join('|');
+     cfg.intensity, cfg.weather, cfg.stars, cfg.motion, cfg.hourlyTemps, cfg.glass].join('|');
 
   // The sun's placement, the hourly temperatures and the separation guard are the only
   // things that depend on where the events are, so they get their own signature.
@@ -502,7 +540,7 @@
         temps = hourTemps(sun, hoursFor, m);
         if (temps) field.appendChild(temps);
       }
-      applyGuard(sun, hoursFor, m);
+      applyGuard(sun, hoursFor, m, cfg);
     }
 
     // ---- the focus band, which moves on its own and is one gradient string ------------
@@ -519,23 +557,20 @@
   // Every event that our own sky pushed below the separation floor gets a 1px inset
   // ring in its own colour. Nothing else about the block is touched, and the ring is
   // removed the moment the layer is.
-  let guardStats = { checked: 0, ringed: 0, worst: 99 };
+  let guardStats = { checked: 0, ringed: 0, worst: 99, glassed: 0, clearest: 1 };
+  // How much of the block you are allowed to see through before legibility takes some of
+  // it back. Off is stock Google, and is exactly stock: the inline styles go back.
+  const GLASS = { off: 1, tinted: 0.74, clear: 0.52 };
+  const forcedColors = () => {
+    try { return matchMedia('(forced-colors: active)').matches; } catch { return false; }
+  };
   const step = hex => ({ hex, rgb: S.colour.hexToRgb(hex) });
   const STEPS_DARK  = ['#5F6368', '#3C4043', '#202124'].map(step);
   const STEPS_LIGHT = ['#C7D2E4', '#E2E9F5', '#FFFFFF'].map(step);
   const anchorsFor = sun => [0, 3, sun.civilDawn, sun.sunrise, sun.sunrise + 0.55, 9, 12, 15, 17.5,
                             sun.golden, sun.sunset, sun.civilDusk, sun.civilDusk + 0.8, 24]
                            .map(h => Math.max(0, Math.min(24, h)));
-  const plateAtFor = sun => {
-    const pp = [[0, .24], [sun.civilDawn, .28], [sun.sunrise + 1, .40], [9, .44], [12, .45],
-                [16, .44], [sun.golden, .34], [sun.sunset, .24], [sun.civilDusk, .22], [24, .24]];
-    return h => {
-      let i = 0; while (i < pp.length - 2 && pp[i + 1][0] < h) i++;
-      const span = Math.max(1e-6, pp[i + 1][0] - pp[i][0]);
-      const t = Math.max(0, Math.min(1, (h - pp[i][0]) / span));
-      return pp[i][1] + (pp[i + 1][1] - pp[i][1]) * t;
-    };
-  };
+  const plateAtFor = sun => S.plateAt(sun);
 
   // surfaceAt composites the whole ramp in linear light for one instant, and between them
   // the guard and the hourly temperatures ask for it a couple of hundred times per column.
@@ -589,15 +624,46 @@
 
   // Writes only. Every rect and every computed fill this needs was already taken in
   // measureColumn, so nothing in here can force a layout.
-  function applyGuard(sun, hoursFor, m) {
+  //
+  // Both treatments live in one pass because they are the same argument from two ends.
+  // Making a block see-through moves it toward the sky; the ring is what gives it an edge
+  // again. Doing them apart would mean measuring the same surface twice and ringing
+  // against a fill that is no longer what is on screen.
+  function applyGuard(sun, hoursFor, m, cfg) {
     const anchors = anchorsFor(sun);
     const plateAt = plateAtFor(sun);
     const surfaceAt = m.surfaceAt || (m.surfaceAt = surfaceCache(hoursFor, anchors, plateAt));
+    // High contrast mode has its own opinion about colour and it outranks ours.
+    const wanted = forcedColors() ? 1 : (GLASS[cfg.glass] ?? GLASS.off);
     for (const e of m.events) {
       if (e.height < 6) continue;
       const hour = Math.max(0, Math.min(24, (e.top + e.bottom) / 2));
       const surface = surfaceAt(hour);
-      const out = S.ringFor(e.fill, surface);
+
+      // ---- see-through ---------------------------------------------------------------
+      const glass = wanted < 1 ? S.glassFor(e.fill, e.ink, surface, wanted) : null;
+      let shown = null;
+      if (glass) {
+        e.el.style.backgroundColor = glass.css;
+        // Read back rather than assume: the browser normalises the string it stores, and
+        // this is the value the staleness check compares against on the next pass.
+        e.stock.applied = e.el.style.backgroundColor;
+        e.el.dataset.skyGlass = '1';
+        // The label is only touched when the solver actually had to move it. Google gives
+        // a chip's title and its time two different weights of the same colour, and
+        // forcing the inside of every block to inherit one colour would flatten that
+        // everywhere to fix it in the few places it breaks.
+        if (glass.flipped) { e.el.style.color = glass.ink; e.el.dataset.skyInk = '1'; }
+        else if (e.el.dataset.skyInk) { e.el.style.color = e.stock.inlineInk; delete e.el.dataset.skyInk; }
+        shown = glass.back;
+        guardStats.glassed++;
+        guardStats.clearest = Math.min(guardStats.clearest, glass.alpha);
+      } else if (e.el.dataset.skyGlass) {
+        unglass(e.el);
+      }
+
+      // ---- and the edge it now needs -------------------------------------------------
+      const out = S.ringFor(e.fill, surface, shown);
       guardStats.checked++;
       if (out) {
         e.el.style.boxShadow = `inset 0 0 0 1px ${out.ring}`;
@@ -689,7 +755,7 @@
       const measured = cols.map(measureColumn);
       const hourPx = measured[0].H / 24;
       let painted = 0;
-      guardStats = { checked: 0, ringed: 0, worst: 99 };
+      guardStats = { checked: 0, ringed: 0, worst: 99, glassed: 0, clearest: 1 };
       state.colMeta = [];
       cols.forEach((c, i) => {
         if (paintColumn(c, dates[i], state.forecast, state.location, measured[i])) painted++;
@@ -704,6 +770,7 @@
           datekeySample !== undefined ? `· datekey sample ${datekeySample}` : '',
           `· forecast ${state.forecast.source} · ${state.location.label} · ${S.units()}`,
           `· guard ${guardStats.ringed}/${guardStats.checked} ringed`
+            + (guardStats.glassed ? `, ${guardStats.glassed} see-through to ${guardStats.clearest}` : '')
             + (guardStats.checked === 0 ? ' (no events in DOM yet)' : '')
             + (guardStats.worst < 99 ? ` (worst was ${guardStats.worst}:1)` : ''));
     } catch (err) {
@@ -732,6 +799,7 @@
   function unmount() {
     document.querySelectorAll(`.${TAG}-field, .${TAG}-temp, .${TAG}-flyers`).forEach(n => n.remove());
     document.querySelectorAll('[data-sky-ring]').forEach(n => { n.style.boxShadow = ''; delete n.dataset.skyRing; });
+    document.querySelectorAll('[data-sky-glass]').forEach(unglass);
     if (S.stopFlyers) S.stopFlyers();
     if (S.hidePopover) S.hidePopover();
     if (gridResize) { gridResize.disconnect(); state.watchedGrid = null; }

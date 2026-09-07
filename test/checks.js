@@ -98,10 +98,127 @@
       return { ok: spawned === 8, spawned };
     },
 
+    // The whole feature rests on one promise, so it is measured rather than asserted by
+    // construction: every block is re-derived from what the harness drew, composited over
+    // the surface the extension itself models, and compared against what stock Google
+    // gives that block. Nothing here asks the extension what it thinks it did.
+    async 'no see-through event is harder to read than stock Google'() {
+      const S = window.__SkyCal, C = S.colour;
+      await h.setConfig({ glass: 'clear' });
+      const cells = $$('[role="gridcell"]').filter(c => c.getBoundingClientRect().height > 500);
+      const worst = { ratio: 99, id: null };
+      let checked = 0, seeThrough = 0, flipped = 0;
+      for (const cell of cells) {
+        const date = cell.querySelector('.skycal-field').dataset.date;
+        const box = cell.getBoundingClientRect(), H = box.height;
+        // The same solar day the painter used. Solving it the other way (from geometry
+        // rather than from the forecast's own sunrise) shifts every anchor and quietly
+        // models a different sky than the one the decisions were made against.
+        const day = window.__fc.daily[date];
+        const sun = day ? S.solarDay(date, day.sunrise, day.sunset, 42.28, -83.74)
+                        : S.solarDayComputed(date, 42.28, -83.74);
+        const anchors = [0, 3, sun.civilDawn, sun.sunrise, sun.sunrise + 0.55, 9, 12, 15, 17.5,
+                         sun.golden, sun.sunset, sun.civilDusk, sun.civilDusk + 0.8, 24]
+                        .map(x => Math.max(0, Math.min(24, x)));
+        const plateAt = S.plateAt(sun);
+        const hoursFor = x => window.__fc.hourly[`${date}T${String(Math.max(0, Math.min(23, Math.round(x)))).padStart(2, '0')}:00`] || null;
+        for (const el of cell.querySelectorAll('[data-eventid]')) {
+          const r = el.getBoundingClientRect();
+          if (r.height < 6) continue;
+          const drew = window.__stockFill.get(el.getAttribute('data-eventid'));
+          const stockFill = C.hexToRgb(drew.fill), stockInk = C.hexToRgb(drew.ink);
+          const target = Math.min(S.GLASS_TARGET, C.contrast(stockInk, stockFill));
+
+          const cs = getComputedStyle(el);
+          const m = cs.backgroundColor.match(/[\d.]+/g).map(Number);
+          const alpha = m.length > 3 ? m[3] : 1;
+          const ink = C.parseRgb(cs.color);
+          const hour = Math.max(0, Math.min(24, ((r.top + r.bottom) / 2 - box.top) / H * 24));
+          const surface = S.surfaceAt(hour, hoursFor, anchors, plateAt);
+          const back = C.over(stockFill, surface, alpha);
+          const got = C.contrast(ink, back);
+
+          checked++;
+          if (alpha < 0.999) seeThrough++;
+          if (C.contrast(ink, stockInk) > 1.05) flipped++;
+          if (got + 0.02 < target && got < worst.ratio)
+            worst.ratio = +got.toFixed(2), worst.id = `${el.getAttribute('data-eventid')} @${hour.toFixed(1)}h wanted ${target.toFixed(2)}`;
+        }
+      }
+      return { ok: worst.id === null && checked > 0 && seeThrough > 0,
+               checked, seeThrough, labelsFlipped: flipped, worstFailure: worst.id };
+    },
+
+    // The point of the feature. If nothing ended up see-through it passed the check above
+    // by doing nothing at all.
+    async 'the sky is actually visible through the blocks'() {
+      await h.setConfig({ glass: 'clear' });
+      const a = $$('[data-eventid]').map(e => {
+        const m = getComputedStyle(e).backgroundColor.match(/[\d.]+/g).map(Number);
+        return m.length > 3 ? m[3] : 1;
+      });
+      const through = a.filter(x => x < 0.999);
+      return { ok: through.length > a.length * 0.7, blocks: a.length, seeThrough: through.length,
+               clearest: Math.min(...a) };
+    },
+
+    // Tinted has to be tinted: less sky than clear, more than off.
+    async 'the three levels are actually three levels'() {
+      const mean = () => { const a = $$('[data-eventid]').map(e => {
+          const m = getComputedStyle(e).backgroundColor.match(/[\d.]+/g).map(Number);
+          return m.length > 3 ? m[3] : 1; });
+        return a.reduce((x, y) => x + y, 0) / a.length; };
+      await h.setConfig({ glass: 'clear' });  const clear = mean();
+      await h.setConfig({ glass: 'tinted' }); const tinted = mean();
+      await h.setConfig({ glass: 'off' });    const off = mean();
+      await h.setConfig({ glass: 'clear' });
+      return { ok: clear < tinted && tinted < off && off === 1,
+               clear: +clear.toFixed(3), tinted: +tinted.toFixed(3), off };
+    },
+
+    // Off means Google's own blocks back, byte for byte, not "something close".
+    async 'off restores exactly what Google drew'() {
+      await h.setConfig({ glass: 'off' });
+      const C = window.__SkyCal.colour;
+      const bad = $$('[data-eventid]').filter(e => {
+        const want = window.__stockFill.get(e.getAttribute('data-eventid'));
+        const cs = getComputedStyle(e);
+        return C.toHex(C.parseRgb(cs.backgroundColor)) !== want.fill.toLowerCase()
+            || C.toHex(C.parseRgb(cs.color)) !== want.ink.toLowerCase()
+            || cs.backgroundColor.startsWith('rgba');
+      });
+      const marks = $$('[data-sky-glass], [data-sky-ink]').length;
+      await h.setConfig({ glass: 'clear' });
+      return { ok: bad.length === 0 && marks === 0, wrong: bad.length, marksLeft: marks };
+    },
+
+    // Recolouring an event is the case where caching "what Google drew" turns into
+    // painting a dead colour back over a live one.
+    async 'an event recoloured in place is not repainted with its old colour'() {
+      await h.setConfig({ glass: 'clear' });
+      const el = $('[data-eventid]');
+      const id = el.getAttribute('data-eventid');
+      const before = getComputedStyle(el).backgroundColor;
+      // Google's move: write the new fill straight onto the same element.
+      el.style.backgroundColor = '#0B8043';
+      el.style.color = '#ffffff';
+      window.__stockFill.set(id, { fill: '#0B8043', ink: '#ffffff' });
+      h.moveEvents();                                   // force the event half to repaint
+      await h.render('recoloured');
+      await h.settle(250);
+      const m = getComputedStyle(el).backgroundColor.match(/[\d.]+/g).map(Number);
+      const now = { r: m[0], g: m[1], b: m[2] };
+      const ok = now.r === 11 && now.g === 128 && now.b === 67;    // #0B8043, still see-through
+      h.seedEvents();
+      await h.render('reseed');
+      await h.settle(250);
+      return { ok, before, became: `rgb(${now.r}, ${now.g}, ${now.b})`, alpha: m[3] ?? 1 };
+    },
+
     async 'turning the layer off leaves nothing behind'() {
       window.__SkyCal.unmount();
       const left = $$('.skycal-field, .skycal-flyers, .skycal-temp').length;
-      const rings = $$('[data-sky-ring]').length;
+      const rings = $$('[data-sky-ring]').length + $$('[data-sky-glass], [data-sky-ink]').length;
       await h.render('remount');
       await h.settle(400);
       return { ok: left === 0 && rings === 0 && $$('.skycal-field').length > 0, left, rings };
