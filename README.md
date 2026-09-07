@@ -164,15 +164,52 @@ So the signature includes the treatment marks, not just the geometry, and it is 
 after the treatment is applied — that second reading is the resting value, and without it
 the layer would alternate between dressed and undressed for ever.
 
+## The moon
+
+At the phase it is actually at, in the part of the night it is actually up. Open-Meteo
+carries no lunar data, so this is computed: Schlyter's low-precision elements with the
+principal perturbations, good to a couple of arcminutes, which is several orders of
+magnitude finer than a calendar column can draw. Checked against known events — the new
+moon of 2000-01-06 18:14 comes back at k=0.0002, the full moon of 2000-01-21 04:40 at
+k=1.0000, first quarter at 0.4993.
+
+The terminator is a half-ellipse whose width is `|2k-1|` of the radius, not a second
+circle offset sideways. The offset-circle trick is the usual shortcut and it is wrong: it
+cannot make a crescent thinner than a quarter without the horns turning the wrong way.
+
+It is drawn only where the moon is both above the horizon and it is dark, which means it
+comes and goes across the week rather than sitting in every column. Near a new moon it is
+up in the daytime and there is nothing to draw at night at all. That is the whole reason
+for computing it rather than decorating with it — and the moon's rise slipping about an
+hour later each day is a thing you can watch happen across the columns.
+
+Altitude is sampled through the day and the crossings bisected, rather than solved between
+two assumed bounds the way sunrise is. The moon rises roughly fifty minutes later each day,
+so a given date may hold a rise, a set, both, or neither, and hunting between assumed
+bounds is how you end up asserting the moon is never up on a Tuesday.
+
 ## Traffic
 
-An aircraft or a flock of birds crosses the grid every half-minute to two minutes, never
-more than two at once. If you sit and wait for one you have misunderstood it.
+Something is nearly always crossing the sky. An empty sky refills within a second or two;
+a busy one is left alone, and three at once is the ceiling. The retire path is what makes
+that hold — a flyer leaving is the moment to ask whether the sky is now empty, because
+otherwise the next arrival is whatever was scheduled back when there were two in the air.
 
 Aircraft fly at any hour and carry a contrail that draws itself in behind them; after
 civil dusk there is no contrail worth drawing, only the anticollision beacon. Birds keep
 daylight hours and crowd the ends of the day, because that is when they actually move.
-Neither flies through a downpour, and nothing is visible through a full deck.
+Shooting stars are deep night only, need a clear sky to be seen through, and are over in
+under two seconds — everything else in this layer crosses the whole week at walking pace,
+and a meteor you can rely on is not a shooting star, it is a metronome.
+
+Nothing flies through a downpour, and nothing is visible through a full deck.
+
+**`animationend` bubbles.** The contrail finishes drawing itself in after eleven seconds,
+that event rises to the wrapper, and a `{once: true}` listener there took a child finishing
+for the flight finishing and removed the aircraft in mid-air — eleven seconds into a
+forty-second crossing. Birds never showed it because their wingbeat is infinite and never
+ends; nor did night aircraft, whose beacon is infinite too. It only touched the one flyer
+with a finite child animation, which is to say every plane in daylight.
 
 The flock is a loose skein rather than a V. A V is a goose thing, and at nine pixels it
 reads as a logo. The wingbeat is the glyph squashed vertically, for the same reason:
@@ -301,6 +338,7 @@ __SkyCal.unmount()
 __SkyCal.setLocation(42.28, -83.74, 'Ann Arbor')
 __SkyCal.setUnits('f')
 __SkyCal.flyNow()                                   // do not wait for the next one
+__SkyCal.diagnose()                                 // what is drawing on an event block
 ```
 
 Content scripts run in an isolated world, so switch the DevTools console context from

@@ -21,6 +21,7 @@
         "src/wmo.js",
         "src/palette.js",
         "src/solar.js",
+        "src/lunar.js",
         "src/guard.js",
         "src/weather.js",
         "src/flyers.js",

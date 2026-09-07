@@ -327,21 +327,9 @@
     const colW = m.colW;
     const size = Math.max(44, Math.min(78, colW * 0.30));
     const needH = (size + 14) / m.H * 24;                     // hours the disc occupies
-    const lo = sun.sunrise + 0.6, hi = sun.sunset - 0.6;
-    const busy = m.events.filter(e => e.bottom > lo && e.top < hi)
-                         .map(e => [e.top, e.bottom])
-                         .sort((a, b) => a[0] - b[0]);
-    const gaps = [];
-    let cursor = lo;
-    for (const [a, b] of busy) { if (a - cursor >= needH) gaps.push([cursor, a]); cursor = Math.max(cursor, b); }
-    if (hi - cursor >= needH) gaps.push([cursor, hi]);
-    if (!gaps.length) return null;                            // nowhere to put it: skip
-    // Of the gaps big enough, take the one nearest solar noon. Biggest-gap alone put the
-    // sun at half four just because the afternoon was free, which is not where it lives.
-    const solarNoon = (sun.sunrise + sun.sunset) / 2;
-    const clamp = ([a, b]) => Math.max(a + needH / 2, Math.min(b - needH / 2, solarNoon));
-    gaps.sort((g1, g2) => Math.abs(clamp(g1) - solarNoon) - Math.abs(clamp(g2) - solarNoon));
-    const noon = clamp(gaps[0]);
+    const noon = freeSlot([[sun.sunrise + 0.6, sun.sunset - 0.6]], needH,
+                          (sun.sunrise + sun.sunset) / 2, m.events);
+    if (noon == null) return null;                            // nowhere to put it: skip
     // Haze dims the sun; it does not put it out. The floor is the point of the change.
     const glare = Math.max(0.68, Math.min(1, 1.04 - mean * 0.64));
     // Two elements, not one, and they are siblings rather than nested. Warmth cannot
@@ -362,6 +350,80 @@
     disc.style.cssText = box;
     disc.innerHTML = `<i class="${TAG}-sun-core"></i>`;
     return [halo, disc];
+  }
+
+  // Somewhere in these windows with `need` hours of clear space, as near as possible to
+  // the hour the body actually belongs at. Both the sun and the moon want this, and they
+  // want it for the same reason: an event block is not a thing to draw a celestial body
+  // on top of. Biggest-gap alone put the sun at half four because the afternoon happened
+  // to be free, which is not where the sun lives.
+  function freeSlot(windows, need, prefer, events) {
+    const gaps = [];
+    for (const [lo, hi] of windows) {
+      if (hi - lo < need) continue;
+      const busy = events.filter(e => e.bottom > lo && e.top < hi)
+                         .map(e => [e.top, e.bottom])
+                         .sort((a, b) => a[0] - b[0]);
+      let cursor = lo;
+      for (const [a, b] of busy) {
+        if (a - cursor >= need) gaps.push([cursor, a]);
+        cursor = Math.max(cursor, b);
+      }
+      if (hi - cursor >= need) gaps.push([cursor, hi]);
+    }
+    if (!gaps.length) return null;
+    const clamp = ([a, b]) => Math.max(a + need / 2, Math.min(b - need / 2, prefer));
+    gaps.sort((g1, g2) => Math.abs(clamp(g1) - prefer) - Math.abs(clamp(g2) - prefer));
+    return clamp(gaps[0]);
+  }
+
+  // The Moon, at the phase it is actually at, in the part of the night it is actually up.
+  //
+  // It is drawn only where it is both above the horizon and dark, which means it comes and
+  // goes across the week rather than sitting in every column: near a new moon it is up in
+  // the daytime and there is nothing to draw at night, which is correct and is the whole
+  // reason for computing it rather than decorating with it.
+  function moonDisc(sun, moon, hoursFor, m, intensity) {
+    if (!moon || !moon.up.length || moon.k < 0.015) return null;   // new moon: nothing lit
+    const night = [[0, Math.max(0, sun.civilDawn - 0.15)],
+                   [Math.min(24, sun.civilDusk + 0.15), 24]];
+    const windows = [];
+    for (const [a, b] of moon.up) for (const [c, d] of night) {
+      const lo = Math.max(a, c), hi = Math.min(b, d);
+      if (hi - lo > 0.6) windows.push([lo, hi]);
+    }
+    if (!windows.length) return null;              // up only in daylight tonight
+
+    const size = Math.max(26, Math.min(52, m.colW * 0.20));
+    const needH = (size + 10) / m.H * 24;
+    // As near its transit as the events allow: that is when it is highest, and highest is
+    // where you would actually have seen it.
+    const at = freeSlot(windows, needH, moon.transit, m.events);
+    if (at == null) return null;
+
+    let cover = 0, n = 0;
+    for (const [a, b] of windows) for (let h = Math.ceil(a); h < b; h++) {
+      const d = hoursFor(h); if (!d) continue;
+      cover += d.cloud; n++;
+    }
+    const mean = n ? cover / n : 0.3;
+    if (mean > 0.8) return null;                   // behind the deck
+
+    // A crescent carries less light than a full moon, and both carry less through cloud.
+    const glow = Math.max(0.34, Math.min(1, (0.42 + moon.k * 0.58) * (1 - mean * 0.55)));
+    const el = document.createElement('div');
+    el.className = `${TAG}-moon`;
+    el.style.cssText = `width:${size}px;height:${size}px;`
+      + `left:${(m.colW * 0.62 - size / 2).toFixed(0)}px;`
+      + `top:calc(${((at / 24) * 100).toFixed(2)}% - ${(size / 2).toFixed(0)}px);`
+      + `opacity:${(glow * Math.min(1, intensity)).toFixed(3)}`;
+    el.innerHTML =
+      `<svg viewBox="0 0 100 100" aria-hidden="true">`
+      + `<circle class="${TAG}-moon-dark" cx="50" cy="50" r="46"/>`
+      + `<path class="${TAG}-moon-lit" d="${S.moonPath(50, 50, 46, moon.k, moon.litRight)}"/>`
+      + `</svg>`;
+    el.dataset.phase = moon.name;
+    return el;
   }
 
   function bloom(hour, hex, alpha, kind) {
@@ -451,7 +513,7 @@
   // silently does nothing until something else happens to force a repaint.
   const skySignature = (date, fc, m, loc, cfg) =>
     [date, fc.fetchedAt, Math.round(m.colW), Math.round(m.H), loc.lat, loc.lon,
-     cfg.intensity, cfg.weather, cfg.stars, cfg.motion, cfg.hourlyTemps, cfg.glass].join('|');
+     cfg.intensity, cfg.weather, cfg.stars, cfg.motion, cfg.hourlyTemps, cfg.glass, cfg.moon].join('|');
 
   // The sun's placement, the hourly temperatures and the separation guard are the only
   // things that depend on where the events are, so they get their own signature.
@@ -500,7 +562,7 @@
       field.insertAdjacentHTML('beforeend',
         `<div class="${TAG}-weather">`
         + `<div class="${TAG}-slot ${TAG}-slot-stars"></div>`
-        + `<div class="${TAG}-slot ${TAG}-slot-sun"></div>`
+        + `<div class="${TAG}-slot ${TAG}-slot-bodies"></div>`
         + `<div class="${TAG}-slot ${TAG}-slot-clouds"></div>`
         + `<div class="${TAG}-slot ${TAG}-slot-fall"></div>`
         + `</div>`);
@@ -543,9 +605,12 @@
 
     // ---- everything that depends on where the events are -----------------------------
     if (was.skySig !== skySig || was.evSig !== evSig) {
-      const sunSlot = field.querySelector(`.${TAG}-slot-sun`);
+      const bodies = field.querySelector(`.${TAG}-slot-bodies`);
       const disc = cfg.weather ? sunDisc(sun, hoursFor, m, cfg.intensity) : null;
-      sunSlot.replaceChildren(...(disc || []));
+      const luna = cfg.moon !== false
+                 ? moonDisc(sun, S.moonDay(date, loc.lat, loc.lon), hoursFor, m, cfg.intensity)
+                 : null;
+      bodies.replaceChildren(...(disc || []), ...(luna ? [luna] : []));
 
       let temps = field.querySelector(`:scope > .${TAG}-temps`);
       if (temps) temps.remove();
@@ -970,6 +1035,44 @@
                            label: label || `${lat}, ${lon}` });
   };
   S.settingsNow = () => state.cfg;
+
+  // Everything that could be drawing a line on an event block: the block itself, every
+  // descendant, both pseudo-elements, plus what we did to it and what Google had there
+  // first. Run it on a calendar that is showing the problem and it says which layer owns
+  // the pixels, instead of me guessing at it from a screenshot.
+  S.diagnose = function (el) {
+    el = el || document.querySelector('[role="gridcell"] [data-eventid]');
+    if (!el) return 'no event block found in a timed column';
+    const paint = n => {
+      const c = getComputedStyle(n);
+      const out = {
+        tag: n.tagName.toLowerCase() + (n === el ? ' (the block)' : ''),
+        bg: c.backgroundColor,
+        bgImage: c.backgroundImage === 'none' ? undefined : c.backgroundImage,
+        border: [c.borderTopWidth, c.borderRightWidth, c.borderBottomWidth, c.borderLeftWidth].join(' '),
+        borderColor: c.borderTopColor + ' | ' + c.borderBottomColor,
+        boxShadow: c.boxShadow === 'none' ? undefined : c.boxShadow,
+        outline: c.outlineStyle === 'none' ? undefined : `${c.outlineWidth} ${c.outlineStyle} ${c.outlineColor}`,
+        size: `${n.offsetWidth}x${n.offsetHeight}`,
+        color: c.color
+      };
+      for (const pseudo of ['::before', '::after']) {
+        const q = getComputedStyle(n, pseudo);
+        if (q.content && q.content !== 'none')
+          out[pseudo] = { content: q.content, bg: q.backgroundColor, height: q.height,
+                          bottom: q.bottom, border: q.borderBottomWidth + ' ' + q.borderBottomColor };
+      }
+      return out;
+    };
+    return {
+      ours: { glass: el.dataset.skyGlass || null, ring: el.dataset.skyRing || null,
+              ink: el.dataset.skyInk || null },
+      stock: S.stockOf(el),
+      block: paint(el),
+      children: [...el.querySelectorAll('*')].slice(0, 8).map(paint),
+      settings: state.cfg && { glass: state.cfg.glass, intensity: state.cfg.intensity }
+    };
+  };
 
   (async () => {
     const cfg = await S.settings();

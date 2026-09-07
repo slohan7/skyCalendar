@@ -3,7 +3,7 @@
 const KEY = 'sky:settings';
 const DEFAULTS = {
   enabled: true, lat: null, lon: null, label: null, units: 'auto', intensity: 1,
-  weather: true, stars: true, flyers: true, glass: 'outline',
+  weather: true, stars: true, flyers: true, moon: true, glass: 'outline',
   hourlyTemps: true, detail: 'hover', motion: 'system'
 };
 const $ = s => document.querySelector(s);
@@ -37,6 +37,7 @@ toggle('enabled', 'enabled');
 toggle('weather', 'weather');
 toggle('stars', 'stars');
 toggle('flyers', 'flyers');
+toggle('moon', 'moon');
 toggle('hourlyTemps', 'hourlyTemps');
 toggle('detail', 'detail', on => (on ? 'hover' : 'off'));
 group('glass', 'glass');
@@ -60,6 +61,7 @@ function paint() {
   set('weather', cfg.weather);
   set('stars', cfg.stars);
   set('flyers', cfg.flyers);
+  set('moon', cfg.moon);
   set('hourlyTemps', cfg.hourlyTemps);
   set('detail', cfg.detail === 'hover');
   for (const [id, val] of [['units', cfg.units], ['motion', cfg.motion], ['glass', cfg.glass],

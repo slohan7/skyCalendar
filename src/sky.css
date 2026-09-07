@@ -582,3 +582,60 @@
    move is a sticker. */
 @media (prefers-reduced-motion: reduce) { .skycal-flyers { display: none } }
 @media (forced-colors: active)          { .skycal-flyers { display: none } }
+
+/* ---- the moon ------------------------------------------------------------- */
+/* Screened onto the night sky for the same reason the sun is: it is a light source, not
+   a sticker laid over one. The dark limb is drawn too, very faintly -- earthshine, the
+   part of a crescent you can just make out on a clear night. */
+
+.skycal-moon {
+  position: absolute;
+  mix-blend-mode: screen;
+  filter: drop-shadow(0 0 7px rgba(214, 228, 255, .42));
+  will-change: transform;
+  animation: skycal-moonrise 34s ease-in-out infinite alternate;
+}
+.skycal-moon svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.skycal-moon-dark { fill: #C3CEE8; opacity: .10; }
+.skycal-moon-lit  { fill: #F6F3E6; }
+
+/* Barely anything. The moon does not shimmer the way heat does, it just hangs there. */
+@keyframes skycal-moonrise {
+  from { transform: scale(1)    }
+  to   { transform: scale(1.03) }
+}
+
+/* ---- shooting stars ------------------------------------------------------- */
+/* Over in a second and a half. The head is the bright end; the tail is a gradient that
+   fades to nothing behind it, and the whole thing fades in and out so it never appears
+   or vanishes with an edge. */
+
+.skycal-meteor { pointer-events: none; }
+
+.skycal-streak {
+  display: block;
+  height: 1.6px;
+  border-radius: 2px;
+  transform: rotate(38deg);
+  transform-origin: right center;
+  background: linear-gradient(to right,
+    transparent, rgba(198, 220, 255, .30) 30%, rgba(236, 244, 255, .95) 88%, #FFFFFF);
+  box-shadow: 0 0 6px 1px rgba(203, 224, 255, .55);
+}
+.skycal-west .skycal-streak { transform: rotate(142deg); transform-origin: left center; }
+
+/* Its own path, because it falls through a corner of the week rather than crossing it. */
+.skycal-falls {
+  animation-name: skycal-streak;
+  animation-timing-function: cubic-bezier(.25, .5, .6, 1);
+}
+@keyframes skycal-streak {
+  from { transform: translate3d(var(--sky-from), 0, 0); opacity: 0 }
+  12%  { opacity: 1 }
+  70%  { opacity: .9 }
+  to   { transform: translate3d(var(--sky-to), var(--sky-drift), 0); opacity: 0 }
+}
+
+@media (prefers-reduced-motion: reduce) { .skycal-moon { animation: none } }
+@media (forced-colors: active)          { .skycal-moon { display: none } }
+.skycal-still .skycal-moon { animation: none !important; }

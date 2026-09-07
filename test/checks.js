@@ -279,9 +279,85 @@
                dressedBefore, after, leftOpaque: opaque };
     },
 
+    // The contrail's own animation ends eleven seconds into a forty-second crossing, and
+    // animationend bubbles, so the wrapper's listener took a child finishing for the
+    // flight finishing and removed the aircraft in mid-air.
+    async 'a child animation ending does not remove the flyer'() {
+      const S = window.__SkyCal;
+      $$('.skycal-flyers > *').forEach(n => n.remove());
+      let plane = null;
+      for (let i = 0; i < 40 && !plane; i++) {
+        if (!S.flyNow()) continue;
+        const el = $('.skycal-flyers > .skycal-flyer:last-child');
+        if (el && el.classList.contains('skycal-plane')) plane = el; else if (el) el.remove();
+      }
+      if (!plane) return { skip: 'no aircraft in 40 attempts' };
+      const child = plane.querySelector('.skycal-contrail, .skycal-beacon');
+      // exactly what the browser does when the contrail finishes drawing itself in
+      child.dispatchEvent(new AnimationEvent('animationend', { bubbles: true }));
+      const survived = plane.isConnected;
+      // and the flight's own end still removes it
+      plane.dispatchEvent(new AnimationEvent('animationend', { bubbles: true }));
+      const removed = !plane.isConnected;
+      return { ok: survived && removed, survivedChild: survived, removedOnOwn: removed };
+    },
+
+    // The sky should not sit empty. An empty one refills in a second or two; a busy one
+    // is left alone.
+    async 'an empty sky refills quickly'() {
+      $$('.skycal-flyers > *').forEach(n => n.remove());
+      await h.settle(4000);
+      const after = $('.skycal-flyers').childElementCount;
+      return { ok: after > 0, inTheAir: after };
+    },
+
+    async 'the moon is drawn at the phase it is actually at'() {
+      const S = window.__SkyCal;
+      // Against known events rather than against our own arithmetic.
+      const known = [['2000-01-06T18:14Z', 0], ['2000-01-21T04:40Z', 1], ['2000-01-14T13:34Z', 0.5]];
+      const errs = known.map(([iso, want]) => Math.abs(S.moonPhase(new Date(iso), 42.28).k - want));
+      const worst = Math.max(...errs);
+      // and a crescent must be drawn as a crescent, not a circle with a circle cut out
+      const p25 = S.moonPath(50, 50, 46, 0.25, true);
+      const p75 = S.moonPath(50, 50, 46, 0.75, true);
+      const rxOf = d => parseFloat(d.split(' A ')[2].split(' ')[0]);
+      const sweepOf = d => d.split(' A ')[2].split(' ')[4];
+      return { ok: worst < 0.005 && Math.abs(rxOf(p25) - 23) < 0.5
+                   && Math.abs(rxOf(p75) - 23) < 0.5 && sweepOf(p25) !== sweepOf(p75),
+               worstPhaseError: +worst.toFixed(5),
+               crescentTerminator: rxOf(p25), gibbousTerminator: rxOf(p75),
+               bowsOppositeWays: sweepOf(p25) !== sweepOf(p75) };
+    },
+
+    // Up in the daytime is not up at night. Near a new moon there is nothing to draw, and
+    // drawing one anyway is the difference between computing the sky and decorating it.
+    async 'the moon is only drawn when it is up and dark'() {
+      const S = window.__SkyCal;
+      await h.setConfig({ moon: true });
+      const drawn = $$('.skycal-moon');
+      let wrong = 0;
+      for (const el of drawn) {
+        const cell = el.closest('[role="gridcell"]');
+        const box = cell.getBoundingClientRect();
+        const r = el.getBoundingClientRect();
+        const hour = ((r.top + r.bottom) / 2 - box.top) / box.height * 24;
+        const date = cell.querySelector('.skycal-field').dataset.date;
+        const day = window.__fc.daily[date];
+        const sun = S.solarDay(date, day.sunrise, day.sunset, 42.28, -83.74);
+        const moon = S.moonDay(date, 42.28, -83.74);
+        const dark = hour < sun.civilDawn || hour > sun.civilDusk;
+        const up = moon.up.some(([a, b]) => hour >= a - 0.75 && hour <= b + 0.75);
+        if (!dark || !up) wrong++;
+      }
+      await h.setConfig({ moon: false });
+      const gone = $$('.skycal-moon').length;
+      await h.setConfig({ moon: true });
+      return { ok: wrong === 0 && gone === 0, drawn: drawn.length, wrong, offRemovesIt: gone === 0 };
+    },
+
     async 'turning the layer off leaves nothing behind'() {
       window.__SkyCal.unmount();
-      const left = $$('.skycal-field, .skycal-flyers, .skycal-temp').length;
+      const left = $$('.skycal-field, .skycal-flyers, .skycal-temp, .skycal-moon').length;
       const rings = $$('[data-sky-ring]').length + $$('[data-sky-glass], [data-sky-ink]').length;
       await h.render('remount');
       await h.settle(400);

@@ -38,7 +38,7 @@
 // ---- instrumentation, installed before a single line of the extension runs ----------
 // Forced layout is the cost that does not show up in a flame chart as "our" time: it
 // shows up as Google's next frame being late. Counting the reads is the honest proxy.
-window.__probe = { rect: 0, style: 0, added: 0, longtasks: 0, longtaskMs: 0 };
+window.__probe = { rect: 0, style: 0, added: 0, flyers: 0, longtasks: 0, longtaskMs: 0 };
 const _rect = Element.prototype.getBoundingClientRect;
 Element.prototype.getBoundingClientRect = function () { window.__probe.rect++; return _rect.call(this); };
 const _style = window.getComputedStyle;
@@ -126,6 +126,7 @@ seedEvents();
 <script src="../src/wmo.js"></script>
 <script src="../src/palette.js"></script>
 <script src="../src/solar.js"></script>
+<script src="../src/lunar.js"></script>
 <script src="../src/guard.js"></script>
 <script src="../src/weather.js"></script>
 <script src="../src/flyers.js" onerror="window.__noFlyers = true"></script>
@@ -151,16 +152,22 @@ new MutationObserver(ms => {
   for (const m of ms) {
     const t = m.target;
     if (t.nodeType !== 1) continue;
-    if (!(String(t.className).startsWith('skycal-') || t.closest('.skycal-field, .skycal-flyers'))) continue;
-    for (const n of m.addedNodes)
-      window.__probe.added += n.nodeType === 1 ? 1 + n.querySelectorAll('*').length : 1;
+    // Traffic arriving is the feature working, not the sky being torn down, so flyers
+    // are counted apart. Folding them in made a passing repaint look like a rebuild the
+    // moment the sky stopped being allowed to sit empty.
+    const flyer = t.closest('.skycal-flyers');
+    if (!flyer && !(String(t.className).startsWith('skycal-') || t.closest('.skycal-field'))) continue;
+    for (const n of m.addedNodes) {
+      const cost = n.nodeType === 1 ? 1 + n.querySelectorAll('*').length : 1;
+      if (flyer) window.__probe.flyers += cost; else window.__probe.added += cost;
+    }
   }
 }).observe(document.body, { childList: true, subtree: true });
 
 const grid = document.querySelector('[role="grid"]');
 window.__h = {
   dates,
-  reset() { window.__probe = { rect: 0, style: 0, added: 0, longtasks: 0, longtaskMs: 0 }; },
+  reset() { window.__probe = { rect: 0, style: 0, added: 0, flyers: 0, longtasks: 0, longtaskMs: 0 }; },
   probe() { return { ...window.__probe }; },
   nodes() { return document.querySelectorAll('.skycal-field *, .skycal-flyers *').length; },
   fields() { return document.querySelectorAll('.skycal-field').length; },
