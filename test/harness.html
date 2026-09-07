@@ -1,0 +1,329 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Sky harness</title>
+<!-- A stand-in for Google Calendar's week grid, built from the structure documented in
+     the README: role=grid > scroll viewport > role=row > role=gridcell, events absolutely
+     positioned at z-index 5. Close enough that content.js cannot tell the difference,
+     which is the point: the extension runs unmodified against it. -->
+<link rel="stylesheet" href="../src/sky.css">
+<style>
+  html, body { margin: 0; height: 100%; font: 12px Roboto, Arial, sans-serif; }
+  [role="main"] { height: 100%; display: flex; flex-direction: column; }
+  .heads { display: flex; padding-left: 56px; border-bottom: 1px solid #dadce0; }
+  [role="columnheader"] { flex: 1; text-align: center; padding: 6px 0 4px; font-size: 11px; color: #70757a; }
+  [role="grid"] { flex: 1; background: #FFFFFF; overflow: hidden; }
+  .viewport { height: 100%; overflow-y: auto; }
+  [role="row"] { display: flex; padding-left: 56px; height: 1200px; position: relative; }
+  [role="gridcell"] { flex: 1; position: relative; border-left: 1px solid #dadce0; }
+  /* Google draws small decorative parts of a chip with currentColor -- rules, bars,
+     spacers, icon strokes. This is one, and it is here because a blanket
+     "[data-sky-ink] * { color: inherit }" repaints it with the label's colour, which puts
+     a dark line across the bottom of every block. */
+  .ev .bar {
+    position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
+    background: currentColor; opacity: .55;
+  }
+  .ev {
+    position: absolute; z-index: 5; left: 2px; right: 6px;
+    border-radius: 4px; padding: 2px 4px; color: #fff; font-size: 11px;
+    overflow: hidden; box-sizing: border-box;
+    /* Google puts a border on the chip in the same colour as the fill. Leaving it opaque
+       while the fill went translucent is what drew a hard line round every block, so the
+       harness has to have one or it cannot reproduce that. */
+    border: 1px solid;
+  }
+</style>
+
+<div role="main">
+  <div class="heads" id="heads"></div>
+  <div role="grid">
+    <div class="viewport"><div role="row" id="row"></div></div>
+  </div>
+</div>
+
+<script src="fixture.js"></script>
+<script>
+// ---- instrumentation, installed before a single line of the extension runs ----------
+// Forced layout is the cost that does not show up in a flame chart as "our" time: it
+// shows up as Google's next frame being late. Counting the reads is the honest proxy.
+window.__probe = { rect: 0, style: 0, added: 0, flyers: 0, longtasks: 0, longtaskMs: 0 };
+const _rect = Element.prototype.getBoundingClientRect;
+Element.prototype.getBoundingClientRect = function () { window.__probe.rect++; return _rect.call(this); };
+const _style = window.getComputedStyle;
+window.getComputedStyle = function (...a) { window.__probe.style++; return _style.apply(window, a); };
+try {
+  new PerformanceObserver(list => {
+    for (const e of list.getEntries()) { window.__probe.longtasks++; window.__probe.longtaskMs += e.duration; }
+  }).observe({ entryTypes: ['longtask'] });
+} catch {}
+
+// ---- the grid ------------------------------------------------------------------------
+const COLS = 7;
+const pad = n => String(n).padStart(2, '0');
+const isoOf = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const datekey = d => ((d.getFullYear() - 1970) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+
+const start = new Date(); start.setDate(start.getDate() - start.getDay());
+const dates = [];
+const row = document.getElementById('row'), heads = document.getElementById('heads');
+// Google's own palette, so the separation guard has real fills to measure.
+const FILLS = ['#039BE5', '#7986CB', '#33B679', '#8E24AA', '#E67C73', '#F6BF26', '#F4511E', '#616161'];
+// Whichever of Google's two label colours actually reads on that fill, which is how they
+// choose it: white on the dark hues, #3C4043 on Banana and the like.
+const INK = Object.fromEntries(FILLS.map(f => {
+  const lin = v => (v <= .04045 ? v / 12.92 : Math.pow((v + .055) / 1.055, 2.4));
+  const L = h => { const n = parseInt(h.slice(1), 16);
+    return .2126 * lin((n >> 16) / 255) + .7152 * lin(((n >> 8) & 255) / 255) + .0722 * lin((n & 255) / 255); };
+  const c = (a, b) => (Math.max(a, b) + .05) / (Math.min(a, b) + .05);
+  return [f, c(L('#ffffff'), L(f)) >= c(L('#3c4043'), L(f)) ? '#ffffff' : '#3c4043'];
+}));
+for (let i = 0; i < COLS; i++) {
+  const d = new Date(start); d.setDate(d.getDate() + i);
+  dates.push(isoOf(d));
+  const h = document.createElement('div');
+  h.setAttribute('role', 'columnheader');
+  h.textContent = d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric' });
+  heads.appendChild(h);
+  const cell = document.createElement('div');
+  cell.setAttribute('role', 'gridcell');
+  cell.setAttribute('data-datekey', String(datekey(d)));
+  row.appendChild(cell);
+}
+
+// A realistic working week: five or six blocks a day, none of them contrived.
+window.__stockFill = new Map();
+function seedEvents(perDay = 6) {
+  // Row children are not all columns. The extension mounts its flyer layer on this row
+  // too, and seeding into that produced a phantom eighth day that nothing would ever
+  // paint -- which then looked exactly like a painter bug.
+  [...row.querySelectorAll(':scope > [role="gridcell"]')].forEach((cell, c) => {
+    cell.querySelectorAll('.ev').forEach(n => n.remove());
+    for (let i = 0; i < perDay; i++) {
+      // Two of the six sit outside the working day, because a block at four in the
+      // morning is over a near-black sky and a block at noon is over a bright one, and a
+      // see-through event has to survive both. Seeding only 08:00-18:00 tests one of them.
+      const startH = i === 0 ? 3.5 + c * 0.4
+                   : i === 1 ? 21 + (c % 3) * 0.7
+                   : 8 + ((c * 3 + i * 2.5) % 10);
+      const len = 0.5 + ((i * 7 + c) % 3) * 0.5;
+      const ev = document.createElement('div');
+      ev.className = 'ev';
+      ev.setAttribute('data-eventid', `e${c}_${i}`);
+      ev.style.top = `${(startH / 24) * 100}%`;
+      ev.style.height = `${(len / 24) * 100}%`;
+      const fill = FILLS[(c + i) % FILLS.length];
+      ev.style.background = fill;
+      // Google does not put white on everything -- Banana and Citron get dark text. Using
+      // white throughout made the solver look far more drastic than it is, because it was
+      // being asked to rescue labels Google would never have written in white.
+      ev.style.color = INK[fill];
+      ev.style.borderColor = fill;
+      ev.textContent = 'Meeting';
+      ev.appendChild(Object.assign(document.createElement('i'), { className: 'bar' }));
+      // The harness knows what it drew. That is the independent source of truth the
+      // legibility check measures against -- it never asks the extension what it started
+      // from, because that is the thing being tested.
+      window.__stockFill.set(ev.getAttribute('data-eventid'), { fill, ink: INK[fill] });
+      cell.appendChild(ev);
+    }
+  });
+}
+seedEvents();
+</script>
+
+<script src="../src/settings.js"></script>
+<script src="../src/wmo.js"></script>
+<script src="../src/palette.js"></script>
+<script src="../src/solar.js"></script>
+<script src="../src/lunar.js"></script>
+<script src="../src/guard.js"></script>
+<script src="../src/weather.js"></script>
+<script src="../src/flyers.js" onerror="window.__noFlyers = true"></script>
+<script src="../src/popover.js"></script>
+<script>
+// The forecast comes from the fixture, so the harness never touches the network and a
+// run is reproducible. Everything else about the extension is the shipping code.
+const S = (window.__SkyCal = window.__SkyCal || {});
+S.getForecast = async () => (window.__fc = window.__skyFixture(dates.concat(
+  dates.map(d => { const x = new Date(d + 'T00:00:00'); x.setDate(x.getDate() + 7); return isoOf(x); }))));
+S.settings = async () => Object.assign({}, S.DEFAULTS, window.__cfgOverride || {},
+                                       { lat: 42.28, lon: -83.74, label: 'Ann Arbor' });
+S.cfgSync = () => Object.assign({}, S.DEFAULTS, window.__cfgOverride || {});
+</script>
+<script src="../src/content.js"></script>
+
+<script>
+// ---- the harness API the runner drives ----------------------------------------------
+// Count the whole subtree, not the root that carried it in. Appending one wrapper that
+// holds four hundred stars is four hundred nodes of work and four hundred animations
+// restarted from zero, which is what the flash is.
+new MutationObserver(ms => {
+  for (const m of ms) {
+    const t = m.target;
+    if (t.nodeType !== 1) continue;
+    // Traffic arriving is the feature working, not the sky being torn down, so flyers
+    // are counted apart. Folding them in made a passing repaint look like a rebuild the
+    // moment the sky stopped being allowed to sit empty.
+    const flyer = t.closest('.skycal-flyers');
+    if (!flyer && !(String(t.className).startsWith('skycal-') || t.closest('.skycal-field'))) continue;
+    for (const n of m.addedNodes) {
+      const cost = n.nodeType === 1 ? 1 + n.querySelectorAll('*').length : 1;
+      if (flyer) window.__probe.flyers += cost; else window.__probe.added += cost;
+    }
+  }
+}).observe(document.body, { childList: true, subtree: true });
+
+const grid = document.querySelector('[role="grid"]');
+window.__h = {
+  dates,
+  reset() { window.__probe = { rect: 0, style: 0, added: 0, flyers: 0, longtasks: 0, longtaskMs: 0 }; },
+  probe() { return { ...window.__probe }; },
+  nodes() { return document.querySelectorAll('.skycal-field *, .skycal-flyers *').length; },
+  fields() { return document.querySelectorAll('.skycal-field').length; },
+
+  async render(reason = 'test') {
+    const t = performance.now();
+    await window.__SkyCal.render(reason);
+    return performance.now() - t;
+  },
+
+  // A cursor sweeping the grid, which is what a person does all day long.
+  mousemoves(n = 120) {
+    const r = grid.getBoundingClientRect();
+    const t = performance.now();
+    for (let i = 0; i < n; i++) {
+      const x = r.left + 40 + ((i * 37) % Math.max(1, r.width - 80));
+      const y = r.top + 40 + ((i * 53) % Math.max(1, r.height - 80));
+      dispatchEvent(new MouseEvent('mousemove', { clientX: x, clientY: y, bubbles: true }));
+    }
+    return performance.now() - t;
+  },
+
+  // Google mutating its own DOM: hover states, chips re-rendering, the mini calendar.
+  churn(n = 30) {
+    const host = row.firstElementChild;
+    for (let i = 0; i < n; i++) {
+      const junk = document.createElement('span');
+      junk.className = 'goog-noise';
+      host.appendChild(junk);
+      junk.remove();
+    }
+  },
+
+  // Wait for the debounce plus a couple of frames, so a scheduled render has landed.
+  settle(ms = 500) { return new Promise(r => setTimeout(r, ms)); },
+
+  // Repoint the fixture at different weather, or different settings, and repaint.
+  async setWeather(opts) {
+    const all = dates.concat(dates.map(d => { const x = new Date(d + 'T00:00:00'); x.setDate(x.getDate() + 7); return isoOf(x); }));
+    window.__SkyCal.getForecast = async () => (window.__fc = window.__skyFixture(all, opts));
+    window.__SkyCal.unmount();
+    await window.__SkyCal.refresh();
+    await this.settle(300);
+  },
+  async setConfig(patch) { window.__cfgOverride = { ...(window.__cfgOverride || {}), ...patch }; await this.remount(); },
+  // The same change without the teardown. The popup's own path unmounts first, so this is
+  // the case that catches a setting missing from the repaint signature.
+  async setConfigLive(patch) {
+    window.__cfgOverride = { ...(window.__cfgOverride || {}), ...patch };
+    await window.__SkyCal.render('settings, no teardown');
+    await this.settle(250);
+  },
+  async remount() {
+    window.__SkyCal.unmount();
+    window.__SkyCal.clearSolarCache && window.__SkyCal.clearSolarCache();
+    await window.__SkyCal.render('reconfigure');
+    await this.settle(300);
+  },
+  // ---- what Google does to its own DOM when you edit or drag an event ---------------
+  // Sampled at frame rate, because "the sky disappears" is a question about how long it
+  // is gone for, and an average tells you nothing about a flash.
+  watchSky(ms = 1500) {
+    return new Promise(resolve => {
+      const want = row.querySelectorAll(':scope > [role="gridcell"]').length;
+      const t0 = performance.now();
+      let outStart = null, longest = 0, samples = 0, missing = 0;
+      const tick = () => {
+        const have = document.querySelectorAll('.skycal-field').length;
+        samples++;
+        if (have < want) {
+          missing++;
+          if (outStart === null) outStart = performance.now();
+        } else if (outStart !== null) {
+          longest = Math.max(longest, performance.now() - outStart);
+          outStart = null;
+        }
+        if (performance.now() - t0 < ms) requestAnimationFrame(tick);
+        else {
+          if (outStart !== null) longest = Math.max(longest, performance.now() - outStart);
+          resolve({ longestOutageMs: Math.round(longest),
+                    framesMissingSky: missing, frames: samples });
+        }
+      };
+      requestAnimationFrame(tick);
+    });
+  },
+
+  // Google re-rendering a day column: the gridcell is replaced outright, and our field,
+  // being a child of it, goes with it.
+  // Google builds a new column; it does not clone ours and strip it. Cloning was costing
+  // thirteen hundred nodes of copy-then-discard inside the very window being measured.
+  rebuildColumns() {
+    for (const cell of [...row.querySelectorAll(':scope > [role="gridcell"]')]) {
+      const fresh = document.createElement('div');
+      fresh.setAttribute('role', 'gridcell');
+      fresh.setAttribute('data-datekey', cell.getAttribute('data-datekey'));
+      for (const ev of cell.querySelectorAll('.ev')) {
+        const c = ev.cloneNode(true);
+        // A chip Google has just built carries none of our marks and none of our inline
+        // colours. cloneNode copies both, which made every rebuild after the first look
+        // free when it is not.
+        for (const a of [...c.attributes]) if (a.name.startsWith('data-sky')) c.removeAttribute(a.name);
+        c.style.backgroundColor = ''; c.style.color = ''; c.style.boxShadow = '';
+        c.style.borderColor = window.__stockFill.get(c.getAttribute('data-eventid')).fill;
+        c.style.background = window.__stockFill.get(c.getAttribute('data-eventid')).fill;
+        c.style.color = window.__stockFill.get(c.getAttribute('data-eventid')).ink;
+        c.querySelectorAll('[data-sky-pin]').forEach(n => { n.style.color = ''; n.removeAttribute('data-sky-pin'); });
+        fresh.appendChild(c);
+      }
+      cell.replaceWith(fresh);
+    }
+  },
+
+  // A moment where the grid cannot be measured at all -- mid-drag, or a view transition.
+  // findGrid wants a gridcell over 500px tall and there is not one for a few frames.
+  collapse(ms = 120) {
+    const cells = [...row.querySelectorAll(':scope > [role="gridcell"]')];
+    const was = row.style.height;
+    row.style.height = '10px';
+    return new Promise(r => setTimeout(() => { row.style.height = was; r(); }, ms));
+  },
+
+  // Dragging an event: a burst of mutations on and around the chip, for as long as the
+  // pointer is down.
+  async drag(ms = 700) {
+    const ev = row.querySelector('.ev');
+    const t0 = performance.now();
+    while (performance.now() - t0 < ms) {
+      ev.style.top = `${20 + ((performance.now() - t0) / ms) * 30}%`;
+      const ghost = document.createElement('div');
+      ghost.className = 'goog-drag-proxy';
+      ev.parentElement.appendChild(ghost);
+      await new Promise(r => requestAnimationFrame(r));
+      ghost.remove();
+    }
+  },
+
+  seedEvents,
+  // Events actually changing, which must repaint. Alternates between two layouts, so
+  // calling it twice in a row is two real changes rather than one change and a no-op.
+  moveEvents() {
+    window.__flip = !window.__flip;
+    const k = window.__flip ? 0 : 2;
+    row.querySelectorAll('.ev').forEach((e, i) => { e.style.top = `${18 + ((i + k) % 9) * 4.5}%`; });
+  }
+};
+</script>
+
+<script src="perf.js"></script>
+<script src="checks.js"></script>

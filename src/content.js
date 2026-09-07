@@ -87,18 +87,21 @@
     if (m) return new Date(+m[1], +m[2] - 1, +m[3]);
     return new Date();
   }
+  // Google's own datekey, from the cell, an ancestor or a descendant. No geometry, so it
+  // is safe to ask for this inside a MutationObserver callback.
+  function dateOfCell(c) {
+    let n = c;
+    for (let i = 0; i < 12 && n; i++, n = n.parentElement) {            // was 5, too shallow
+      const k = n.getAttribute && n.getAttribute('data-datekey');
+      if (k) { const d = decodeDatekey(k); if (d) return d; }
+    }
+    const inner = c.querySelector('[data-datekey]');                    // or on a descendant
+    if (inner) { const d = decodeDatekey(inner.getAttribute('data-datekey')); if (d) return d; }
+    return null;
+  }
+
   function columnDates(cols) {
-    // Prefer Google's own datekey wherever it is present on the cell or an ancestor.
-    const viaKey = cols.map(c => {
-      let n = c;
-      for (let i = 0; i < 12 && n; i++, n = n.parentElement) {          // was 5, too shallow
-        const k = n.getAttribute && n.getAttribute('data-datekey');
-        if (k) { const d = decodeDatekey(k); if (d) return d; }
-      }
-      const inner = c.querySelector('[data-datekey]');                   // or on a descendant
-      if (inner) { const d = decodeDatekey(inner.getAttribute('data-datekey')); if (d) return d; }
-      return null;
-    });
+    const viaKey = cols.map(dateOfCell);
     if (viaKey.every(Boolean)) return { dates: viaKey, method: 'data-datekey' };
     // Otherwise: the view's anchor date, one day per column, left to right.
     const start = anchorDate();
@@ -135,8 +138,7 @@
   }
 
   function buildPlate(sun) {
-    const pts = [[0, .34], [sun.civilDawn, .36], [sun.sunrise + 1, .48], [9, .51], [12, .52],
-                 [16, .51], [sun.golden, .42], [sun.sunset, .32], [sun.civilDusk, .30], [24, .34]];
+    const pts = S.plateStops(sun);
     return `linear-gradient(to bottom, ${pts.map(([h, a]) =>
       `rgba(255,255,255,${a}) ${pct(Math.max(0, Math.min(24, h))).toFixed(2)}%`).join(', ')})`;
   }
@@ -309,8 +311,14 @@
   }
 
   // The sun as an object rather than only as a bloom, on days clear enough to see one.
-  // A soft disc with a halo that breathes very slowly: shimmer, not a spinning icon.
-  function sunDisc(sun, hoursFor, colW, cell) {
+  //
+  // It used to read as something behind the sky rather than in it, for three reasons and
+  // all three are fixed here. It composited as an ordinary translucent overlay sitting on
+  // a white plate that had already washed the sky out, so it had nothing to be brighter
+  // *than*; it now screens onto the sky, which is what light does. Its opacity was
+  // 0.9 - mean*1.1, which is 0.29 at half cover -- a smudge, not a star. And it was a
+  // 58px disc whose gradient had faded out by 72%, so there was no core and no corona.
+  function sunDisc(sun, hoursFor, m, intensity) {
     let cover = 0, n = 0;
     for (let h = Math.ceil(sun.sunrise); h < sun.sunset; h++) {
       const d = hoursFor(h); if (!d) continue;
@@ -319,33 +327,105 @@
     if (!n) return null;
     const mean = cover / n;
     if (mean > 0.55) return null;                       // overcast: no disc
-    const size = Math.max(34, Math.min(58, colW * 0.20));
-    const box = cell.getBoundingClientRect();
-    const H = box.height || 1;
-    const needH = (size + 14) / H * 24;                       // hours the disc occupies
-    const lo = sun.sunrise + 0.6, hi = sun.sunset - 0.6;
-    const busy = [...cell.querySelectorAll('[data-eventid]')]
-      .map(e => { const r = e.getBoundingClientRect();
-                  return [(r.top - box.top) / H * 24, (r.bottom - box.top) / H * 24]; })
-      .filter(([a, b]) => b > lo && a < hi)
-      .sort((a, b) => a[0] - b[0]);
-    const gaps = [];
-    let cursor = lo;
-    for (const [a, b] of busy) { if (a - cursor >= needH) gaps.push([cursor, a]); cursor = Math.max(cursor, b); }
-    if (hi - cursor >= needH) gaps.push([cursor, hi]);
-    if (!gaps.length) return null;                            // nowhere to put it: skip
-    // Of the gaps big enough, take the one nearest solar noon. Biggest-gap alone put the
-    // sun at half four just because the afternoon was free, which is not where it lives.
-    const solarNoon = (sun.sunrise + sun.sunset) / 2;
-    const clamp = ([a, b]) => Math.max(a + needH / 2, Math.min(b - needH / 2, solarNoon));
-    gaps.sort((g1, g2) => Math.abs(clamp(g1) - solarNoon) - Math.abs(clamp(g2) - solarNoon));
-    const noon = clamp(gaps[0]);
-    const el = document.createElement('div');
-    el.className = `${TAG}-sun`;
-    el.style.cssText = `width:${size}px;height:${size}px;`
+    const colW = m.colW;
+    const size = Math.max(44, Math.min(78, colW * 0.30));
+    const needH = (size + 14) / m.H * 24;                     // hours the disc occupies
+    const noon = freeSlot([[sun.sunrise + 0.6, sun.sunset - 0.6]], needH,
+                          (sun.sunrise + sun.sunset) / 2, m.events);
+    if (noon == null) return null;                            // nowhere to put it: skip
+    // Haze dims the sun; it does not put it out. The floor is the point of the change.
+    const glare = Math.max(0.68, Math.min(1, 1.04 - mean * 0.64));
+    // Two elements, not one, and they are siblings rather than nested. Warmth cannot
+    // survive a screen blend -- a midday sky is already at 0.94 blue, and screening
+    // anything onto that returns white -- so the halo paints normally and tints, and the
+    // core screens on top of it and is unconditionally the brightest thing in the column.
+    // Nesting them would put the core inside the halo's opacity group, where its backdrop
+    // is transparent and the blend has nothing to work against.
+    const box = `width:${size}px;height:${size}px;`
       + `left:${(colW * 0.5 - size / 2).toFixed(0)}px;`
       + `top:calc(${((noon / 24) * 100).toFixed(2)}% - ${(size / 2).toFixed(0)}px);`
-      + `opacity:${(0.9 - mean * 1.1).toFixed(2)}`;
+      + `opacity:${(glare * Math.min(1, intensity)).toFixed(3)}`;
+    const halo = document.createElement('div');
+    halo.className = `${TAG}-sun-halo`;
+    halo.style.cssText = box;
+    const disc = document.createElement('div');
+    disc.className = `${TAG}-sun`;
+    disc.style.cssText = box;
+    disc.innerHTML = `<i class="${TAG}-sun-core"></i>`;
+    return [halo, disc];
+  }
+
+  // Somewhere in these windows with `need` hours of clear space, as near as possible to
+  // the hour the body actually belongs at. Both the sun and the moon want this, and they
+  // want it for the same reason: an event block is not a thing to draw a celestial body
+  // on top of. Biggest-gap alone put the sun at half four because the afternoon happened
+  // to be free, which is not where the sun lives.
+  function freeSlot(windows, need, prefer, events) {
+    const gaps = [];
+    for (const [lo, hi] of windows) {
+      if (hi - lo < need) continue;
+      const busy = events.filter(e => e.bottom > lo && e.top < hi)
+                         .map(e => [e.top, e.bottom])
+                         .sort((a, b) => a[0] - b[0]);
+      let cursor = lo;
+      for (const [a, b] of busy) {
+        if (a - cursor >= need) gaps.push([cursor, a]);
+        cursor = Math.max(cursor, b);
+      }
+      if (hi - cursor >= need) gaps.push([cursor, hi]);
+    }
+    if (!gaps.length) return null;
+    const clamp = ([a, b]) => Math.max(a + need / 2, Math.min(b - need / 2, prefer));
+    gaps.sort((g1, g2) => Math.abs(clamp(g1) - prefer) - Math.abs(clamp(g2) - prefer));
+    return clamp(gaps[0]);
+  }
+
+  // The Moon, at the phase it is actually at, in the part of the night it is actually up.
+  //
+  // It is drawn only where it is both above the horizon and dark, which means it comes and
+  // goes across the week rather than sitting in every column: near a new moon it is up in
+  // the daytime and there is nothing to draw at night, which is correct and is the whole
+  // reason for computing it rather than decorating with it.
+  function moonDisc(sun, moon, hoursFor, m, intensity) {
+    if (!moon || !moon.up.length || moon.k < 0.015) return null;   // new moon: nothing lit
+    const night = [[0, Math.max(0, sun.civilDawn - 0.15)],
+                   [Math.min(24, sun.civilDusk + 0.15), 24]];
+    const windows = [];
+    for (const [a, b] of moon.up) for (const [c, d] of night) {
+      const lo = Math.max(a, c), hi = Math.min(b, d);
+      if (hi - lo > 0.6) windows.push([lo, hi]);
+    }
+    if (!windows.length) return null;              // up only in daylight tonight
+
+    const size = Math.max(26, Math.min(52, m.colW * 0.20));
+    const needH = (size + 10) / m.H * 24;
+    // As near its transit as the events allow: that is when it is highest, and highest is
+    // where you would actually have seen it.
+    const at = freeSlot(windows, needH, moon.transit, m.events);
+    if (at == null) return null;
+
+    let cover = 0, n = 0;
+    for (const [a, b] of windows) for (let h = Math.ceil(a); h < b; h++) {
+      const d = hoursFor(h); if (!d) continue;
+      cover += d.cloud; n++;
+    }
+    const mean = n ? cover / n : 0.3;
+    if (mean > 0.8) return null;                   // behind the deck
+
+    // A crescent carries less light than a full moon, and both carry less through cloud.
+    const glow = Math.max(0.34, Math.min(1, (0.42 + moon.k * 0.58) * (1 - mean * 0.55)));
+    const el = document.createElement('div');
+    el.className = `${TAG}-moon`;
+    el.style.cssText = `width:${size}px;height:${size}px;`
+      + `left:${(m.colW * 0.62 - size / 2).toFixed(0)}px;`
+      + `top:calc(${((at / 24) * 100).toFixed(2)}% - ${(size / 2).toFixed(0)}px);`
+      + `opacity:${(glow * Math.min(1, intensity)).toFixed(3)}`;
+    el.innerHTML =
+      `<svg viewBox="0 0 100 100" aria-hidden="true">`
+      + `<circle class="${TAG}-moon-dark" cx="50" cy="50" r="46"/>`
+      + `<path class="${TAG}-moon-lit" d="${S.moonPath(50, 50, 46, moon.k, moon.litRight)}"/>`
+      + `</svg>`;
+    el.dataset.phase = moon.name;
     return el;
   }
 
@@ -358,7 +438,145 @@
     return d;
   }
 
-  function paintColumn(cell, date, fc, loc) {
+  // ---------------------------------------------------------------- measuring
+  // One read pass per column, taken before anything at all is written. The old code read
+  // an event's rect, wrote a box-shadow, read the next event's rect, and so on: every
+  // write invalidated layout and every following read forced it again. The cost of that
+  // does not land in our frame, it lands in Google's next one, which is what "the
+  // calendar feels slower" actually was.
+  function measureColumn(cell) {
+    const box = cell.getBoundingClientRect();
+    const H = box.height || 1;
+    const events = [];
+    for (const el of cell.querySelectorAll('[data-eventid]')) {
+      const r = el.getBoundingClientRect();
+      if (r.height < 1) continue;
+      const st = stockOf(el);
+      events.push({
+        el,
+        stock:  st,          // carried forward: asking again after we have written to the
+                             // element would trip the staleness check with our own write
+        id:     el.getAttribute('data-eventid'),
+        top:    (r.top - box.top) / H * 24,
+        bottom: (r.bottom - box.top) / H * 24,
+        right:  r.right - box.left,
+        height: r.height,
+        fill:   st.fill,                 // what Google drew, never what we last wrote
+        ink:    st.ink
+      });
+    }
+    return { box, H, colW: box.width || 160, events };
+  }
+
+  // What Google drew, captured the first time we see a block and never again -- once we
+  // have made it see-through its computed background is ours, and asking a second time
+  // would compound our own answer into the next one. The inline values are kept
+  // separately and verbatim, because that is what has to go back on unmount: Google sets
+  // these inline, and "restoring" by clearing them would strip the event's colour.
+  const stock = new WeakMap();
+  function stockOf(el) {
+    let s = stock.get(el);
+    // Caching this forever is wrong. Recolour an event and Google may write the new fill
+    // straight onto the same element, at which point our record of "what Google drew" is
+    // a colour that no longer exists -- and we would cheerfully paint it back over the
+    // one the user just chose. If the inline background is not the string we last wrote,
+    // somebody else has been here, and the record is thrown away.
+    if (s && el.style.backgroundColor !== s.applied) s = null;
+    if (!s) {
+      const cs = getComputedStyle(el);
+      s = { fill: cs.backgroundColor, ink: cs.color,
+            inlineFill: el.style.backgroundColor, inlineInk: el.style.color,
+            // Google puts a border colour on the chip as well, and leaving it opaque
+            // while the fill goes see-through is what draws a hard line round every
+            // block. It is ours to manage now, which also means ours to put back.
+            inlineBorder: el.style.borderColor, inlineShadow: el.style.boxShadow,
+            applied: el.style.backgroundColor };
+      stock.set(el, s);
+    }
+    return s;
+  }
+  // Anything drawing with currentColor follows the chip's colour by ordinary inheritance,
+  // so moving the label moves the decoration with it -- which is what put a dark bar
+  // across the bottom of every block. No stylesheet rule can prevent that, because the
+  // decoration is not overriding anything: it is inheriting, correctly, from a colour we
+  // changed. The only fix is to say what those elements should be instead.
+  //
+  // An element with no children at all is a rule, a bar, a spacer. Text is what should
+  // follow the label; decoration keeps the colour Google gave it. One that already has
+  // its own inline colour is already pinned and is left alone.
+  function pinDecoration(el, stockInk) {
+    for (const n of el.querySelectorAll('*:empty')) {
+      if (n.style.color) continue;
+      n.style.color = stockInk;
+      n.dataset.skyPin = '1';
+    }
+  }
+  function unpin(el) {
+    el.querySelectorAll('[data-sky-pin]').forEach(n => {
+      n.style.color = '';                    // only ever set where there was nothing
+      delete n.dataset.skyPin;
+    });
+  }
+
+  function unglass(el) {
+    const s = stock.get(el);
+    if (s) {
+      el.style.backgroundColor = s.inlineFill;
+      el.style.color = s.inlineInk;
+      el.style.borderColor = s.inlineBorder;
+      s.applied = el.style.backgroundColor;
+    }
+    unpin(el);
+    delete el.dataset.skyGlass;
+    delete el.dataset.skyInk;
+  }
+  S.stockOf = el => stock.get(el) || null;      // console handle, and the tests use it
+
+  // What the drawn sky is a function of. If none of this moved then the sky did not move
+  // either, and tearing it down would only restart several hundred animations from zero.
+  // That restart is the flash.
+  // Every setting the painter reads belongs in here, including the ones that only affect
+  // the event-dependent half: a setting missing from the signature is a setting that
+  // silently does nothing until something else happens to force a repaint.
+  const skySignature = (date, fc, m, loc, cfg) =>
+    [date, fc.fetchedAt, Math.round(m.colW), Math.round(m.H), loc.lat, loc.lon,
+     cfg.intensity, cfg.weather, cfg.stars, cfg.motion, cfg.hourlyTemps, cfg.glass, cfg.moon].join('|');
+
+  // The sun's placement, the hourly temperatures and the separation guard are the only
+  // things that depend on where the events are, so they get their own signature.
+  //
+  // The marks are in here, and they have to be. Google throws event chips away and builds
+  // them again constantly, and a rebuilt chip at the same hour in the same colour has an
+  // identical signature by value while being, in fact, a different element carrying none
+  // of our treatment. Signing by value alone means a repaint is skipped and the new chip
+  // stays undressed -- which on a real calendar looks like events randomly snapping back
+  // to opaque. Reading a dataset attribute forces no layout, so this is nearly free.
+  function eventSignature(m) {
+    let out = '';
+    for (const e of m.events)
+      out += `${e.id}:${e.top.toFixed(2)},${e.bottom.toFixed(2)},${Math.round(e.right)},${e.fill}`
+           + `,${e.el.dataset.skyGlass || ''}${e.el.dataset.skyRing || ''}${e.el.dataset.skyInk || ''};`;
+    return out;
+  }
+
+  const painted = new WeakMap();      // field element -> what is currently drawn on it
+
+  // A day column that Google has just replaced takes our field with it, and building a
+  // fresh one is thirteen hundred nodes of stars and cloud lobes -- which is most of the
+  // time the sky spends missing after an event is moved. The removed column still holds
+  // the field in memory at the moment we hear about it, so it is kept and put into the
+  // replacement instead. Its signature comes with it, so nothing is rebuilt at all.
+  const orphanage = new Map();       // date -> a field whose column was taken away
+
+  function rescueSky(node) {
+    const fields = node.classList && node.classList.contains(`${TAG}-field`)
+      ? [node]
+      : (node.querySelectorAll ? [...node.querySelectorAll(`.${TAG}-field`)] : []);
+    for (const f of fields) if (f.dataset.date) orphanage.set(f.dataset.date, f);
+    return fields.length > 0;
+  }
+
+  function paintColumn(cell, date, fc, loc, m) {
     const day = fc.daily?.[date];
     // Sky first, weather second. Solar geometry is computable for any date, so a column
     // outside the forecast window still gets its day drawn -- it just has no weather.
@@ -370,90 +588,150 @@
       return fc.hourly?.[`${date}T${hh}:00`] || null;
     };
 
+    const cfg = state.cfg || S.DEFAULTS;
     let field = cell.querySelector(`:scope > .${TAG}-field`);
+    if (!field && orphanage.has(date)) {
+      field = orphanage.get(date);
+      orphanage.delete(date);
+      if (getComputedStyle(cell).position === 'static') cell.style.position = 'relative';
+      cell.insertBefore(field, cell.firstChild);
+    }
     if (!field) {
       field = document.createElement('div');
       field.className = `${TAG}-field`;
-      if ((state.cfg || S.DEFAULTS).motion === 'reduce') field.classList.add(`${TAG}-still`);
       field.innerHTML = `<div class="${TAG}-sky"></div>`;
       field.appendChild(bloom(sun.sunrise, S.BLOOM.sunrise[0], S.BLOOM.sunrise[1], 'sunrise'));
       field.appendChild(bloom(sun.golden + 0.35, S.BLOOM.golden[0], S.BLOOM.golden[1], 'sunset'));
       field.insertAdjacentHTML('beforeend', `<div class="${TAG}-plate"></div><div class="${TAG}-wash"></div>`);
-      field.insertAdjacentHTML('beforeend', `<div class="${TAG}-weather"></div>`);
+      // Four standing slots inside the weather layer, in painting order, so that a change
+      // to one of them does not take the other three down with it. The sun keeps its own
+      // slot because it screens onto the sky and must not sit inside a group opacity:
+      // an isolated group has nothing to screen against.
+      field.insertAdjacentHTML('beforeend',
+        `<div class="${TAG}-weather">`
+        + `<div class="${TAG}-slot ${TAG}-slot-stars"></div>`
+        + `<div class="${TAG}-slot ${TAG}-slot-bodies"></div>`
+        + `<div class="${TAG}-slot ${TAG}-slot-clouds"></div>`
+        + `<div class="${TAG}-slot ${TAG}-slot-fall"></div>`
+        + `</div>`);
       field.insertAdjacentHTML('beforeend', `<div class="${TAG}-focus"></div>`);
       if (getComputedStyle(cell).position === 'static') cell.style.position = 'relative';
       cell.insertBefore(field, cell.firstChild);
     }
     field.dataset.date = date;
-    field.classList.toggle(`${TAG}-still`, (state.cfg || S.DEFAULTS).motion === 'reduce');
-    field.querySelector(`.${TAG}-sky`).style.background = buildSky(sun, hoursFor);
-    field.querySelector(`.${TAG}-plate`).style.background = buildPlate(sun);
-    field.querySelector(`.${TAG}-wash`).style.background = buildWash(sun);
-    field.querySelector(`.${TAG}-focus`).style.background = buildFocus(date);
-    const weather = field.querySelector(`.${TAG}-weather`);
-    weather.replaceChildren();
-    const cfg = state.cfg || S.DEFAULTS;
-    const colW = cell.getBoundingClientRect().width || 160;
-    weather.style.opacity = String(Math.min(1.4, cfg.intensity));
-    if (cfg.stars)   { const stars = starField(sun, hoursFor, colW); if (stars) weather.appendChild(stars); }
-    if (cfg.weather) {
-      const disc0 = sunDisc(sun, hoursFor, colW, cell); if (disc0) weather.appendChild(disc0);
-      const clouds = cloudField(hoursFor, colW, sun);   if (clouds) weather.appendChild(clouds);
+    field.classList.toggle(`${TAG}-still`, cfg.motion === 'reduce');
+
+    const was = painted.get(field) || {};
+    const skySig = skySignature(date, fc, m, loc, cfg);
+    const evSig = eventSignature(m);
+    const now = { skySig, evSig, focus: was.focus };
+    const dim = String(Math.min(1, cfg.intensity));
+
+    // ---- the sky itself: only when something it depends on actually changed ----------
+    if (was.skySig !== skySig) {
+      field.querySelector(`.${TAG}-sky`).style.background = buildSky(sun, hoursFor);
+      field.querySelector(`.${TAG}-plate`).style.background = buildPlate(sun);
+      field.querySelector(`.${TAG}-wash`).style.background = buildWash(sun);
+      const blooms = field.querySelectorAll(`.${TAG}-bloom`);
+      blooms[0].style.top = `calc(${pct(sun.sunrise).toFixed(2)}% - 90px)`;
+      blooms[1].style.top = `calc(${pct(sun.golden + 0.35).toFixed(2)}% - 90px)`;
+
+      const slot = n => field.querySelector(`.${TAG}-slot-${n}`);
+      const stars = slot('stars'), clouds = slot('clouds'), fall = slot('fall');
+      stars.style.opacity = clouds.style.opacity = fall.style.opacity = dim;
+      const s0 = cfg.stars ? starField(sun, hoursFor, m.colW) : null;
+      stars.replaceChildren(...(s0 ? [s0] : []));
+      const c0 = cfg.weather ? cloudField(hoursFor, m.colW, sun) : null;
+      clouds.replaceChildren(...(c0 ? [c0] : []));
+      const kids = [];
+      if (cfg.weather) {
+        const precip = precipBand(hoursFor); if (precip) kids.push(precip);
+        const storm  = stormBand(hoursFor);  if (storm)  kids.push(storm);
+      }
+      fall.replaceChildren(...kids);
     }
-    if (cfg.weather) {
-      const precip = precipBand(hoursFor); if (precip) weather.appendChild(precip);
-      const storm  = stormBand(hoursFor);  if (storm)  weather.appendChild(storm);
+
+    // ---- everything that depends on where the events are -----------------------------
+    if (was.skySig !== skySig || was.evSig !== evSig) {
+      const bodies = field.querySelector(`.${TAG}-slot-bodies`);
+      const disc = cfg.weather ? sunDisc(sun, hoursFor, m, cfg.intensity) : null;
+      const luna = cfg.moon !== false
+                 ? moonDisc(sun, S.moonDay(date, loc.lat, loc.lon), hoursFor, m, cfg.intensity)
+                 : null;
+      bodies.replaceChildren(...(disc || []), ...(luna ? [luna] : []));
+
+      let temps = field.querySelector(`:scope > .${TAG}-temps`);
+      if (temps) temps.remove();
+      if (cfg.hourlyTemps) {
+        temps = hourTemps(sun, hoursFor, m);
+        if (temps) field.appendChild(temps);
+      }
+      applyGuard(sun, hoursFor, m, cfg);
+      // Signed again, now that the marks are on. This is the resting value: the next pass
+      // reads the same marks and matches, so the treatment settles in one repaint rather
+      // than alternating between dressed and undressed for ever.
+      now.evSig = eventSignature(m);
     }
 
-
-    applyGuard(cell, sun, hoursFor);
-
-    let temps = field.querySelector(`:scope > .${TAG}-temps`);
-    if (temps) temps.remove();
-    if (cfg.hourlyTemps) {
-      temps = hourTemps(cell, sun, hoursFor, cell.getBoundingClientRect().width || 160);
-      if (temps) field.appendChild(temps);
+    // ---- the focus band, which moves on its own and is one gradient string ------------
+    const focus = buildFocus(date);
+    if (was.focus !== focus) {
+      field.querySelector(`.${TAG}-focus`).style.background = focus;
+      now.focus = focus;
     }
 
-    const blooms = field.querySelectorAll(`.${TAG}-bloom`);
-    blooms[0].style.top = `calc(${pct(sun.sunrise).toFixed(2)}% - 90px)`;
-    blooms[1].style.top = `calc(${pct(sun.golden + 0.35).toFixed(2)}% - 90px)`;
+    painted.set(field, now);
     return true;
   }
 
   // Every event that our own sky pushed below the separation floor gets a 1px inset
   // ring in its own colour. Nothing else about the block is touched, and the ring is
   // removed the moment the layer is.
-  let guardStats = { checked: 0, ringed: 0, worst: 99 };
+  let guardStats = { checked: 0, ringed: 0, worst: 99, glassed: 0, clearest: 1 };
+  // How much of the block you are allowed to see through before legibility takes some of
+  // it back. Off is stock Google, and is exactly stock: the inline styles go back.
+  const GLASS = { off: 1, tinted: 0.74, clear: 0.52, outline: 0.12 };
+  // How hard the edge has to work. Outlined, it is the only thing saying where the block
+  // is, so it is asked for more; filled, the fill is still doing most of that job.
+  const EDGE_FLOOR = { outline: 3.0, clear: 2.1, tinted: 1.9 };
+  const EDGE_PX = { outline: 1.5, clear: 1, tinted: 1 };
+  const forcedColors = () => {
+    try { return matchMedia('(forced-colors: active)').matches; } catch { return false; }
+  };
+  const step = hex => ({ hex, rgb: S.colour.hexToRgb(hex) });
+  const STEPS_DARK  = ['#5F6368', '#3C4043', '#202124'].map(step);
+  const STEPS_LIGHT = ['#C7D2E4', '#E2E9F5', '#FFFFFF'].map(step);
   const anchorsFor = sun => [0, 3, sun.civilDawn, sun.sunrise, sun.sunrise + 0.55, 9, 12, 15, 17.5,
                             sun.golden, sun.sunset, sun.civilDusk, sun.civilDusk + 0.8, 24]
                            .map(h => Math.max(0, Math.min(24, h)));
-  const plateAtFor = sun => {
-    const pp = [[0, .24], [sun.civilDawn, .28], [sun.sunrise + 1, .40], [9, .44], [12, .45],
-                [16, .44], [sun.golden, .34], [sun.sunset, .24], [sun.civilDusk, .22], [24, .24]];
+  const plateAtFor = sun => S.plateAt(sun);
+
+  // surfaceAt composites the whole ramp in linear light for one instant, and between them
+  // the guard and the hourly temperatures ask for it a couple of hundred times per column.
+  // A quarter of an hour is far finer than a contrast check can tell apart, and the two
+  // consumers share the table.
+  function surfaceCache(hoursFor, anchors, plateAt) {
+    const seen = new Map();
     return h => {
-      let i = 0; while (i < pp.length - 2 && pp[i + 1][0] < h) i++;
-      const span = Math.max(1e-6, pp[i + 1][0] - pp[i][0]);
-      const t = Math.max(0, Math.min(1, (h - pp[i][0]) / span));
-      return pp[i][1] + (pp[i + 1][1] - pp[i][1]) * t;
+      const k = Math.round(h * 4);
+      let v = seen.get(k);
+      if (v === undefined) seen.set(k, v = S.surfaceAt(k / 4, hoursFor, anchors, plateAt));
+      return v;
     };
-  };
+  }
 
   // Hourly temperature. The contextual layer from the design: present, quiet, and never
   // in the way. It sits at the right edge of the column, below every event, and is
   // suppressed outright wherever an event occupies that hour -- the same placement rule
   // the sun and the moment labels use.
-  function hourTemps(cell, sun, hoursFor, colW) {
+  function hourTemps(sun, hoursFor, m) {
     const anchors = anchorsFor(sun), plateAt = plateAtFor(sun);
-    const box = cell.getBoundingClientRect();
-    const H = box.height || 1;
-    const busy = [...cell.querySelectorAll('[data-eventid]')].map(e => {
-      const r = e.getBoundingClientRect();
-      return [(r.top - box.top) / H * 24, (r.bottom - box.top) / H * 24, r.right - box.left];
-    });
+    const H = m.H, colW = m.colW;
+    const busy = m.events.map(e => [e.top, e.bottom, e.right]);
     const wrap = document.createElement('div');
     wrap.className = `${TAG}-temps`;
     const labelH = 13 / H * 24;                       // how many hours a 13px label spans
+    const surfaceAt = m.surfaceAt || (m.surfaceAt = surfaceCache(hoursFor, anchors, plateAt));
     let n = 0;
     for (let h = 0; h < 24; h++) {
       const d = hoursFor(h);
@@ -462,16 +740,15 @@
       const covered = busy.some(([a, b, right]) =>
         b > h + 0.05 && a < h + labelH + 0.05 && right > colW - 34);
       if (covered) continue;
-      const surf = S.surfaceAt(h + 0.5, hoursFor, anchors, plateAt);
+      const surf = surfaceAt(h + 0.5);
       // the contrast guard, applied to the smallest text in the system
       const dark = S.colour.lum(surf) > 0.40;
-      const steps = dark ? ['#5F6368', '#3C4043', '#202124'] : ['#C7D2E4', '#E2E9F5', '#FFFFFF'];
-      const fill = steps.find(c => S.colour.contrast(S.colour.hexToRgb(c), surf) >= 3)
-                || steps[steps.length - 1];
+      const steps = dark ? STEPS_DARK : STEPS_LIGHT;
+      const fill = steps.find(c => S.colour.contrast(c.rgb, surf) >= 3) || steps[steps.length - 1];
       const t = document.createElement('span');
       t.className = `${TAG}-hourtemp`;
       t.style.top = `${((h / 24) * 100).toFixed(3)}%`;
-      t.style.color = fill;
+      t.style.color = fill.hex;
       t.textContent = `${Math.round(d.temp)}\u00B0`;
       wrap.appendChild(t);
       n++;
@@ -479,28 +756,83 @@
     return n ? wrap : null;
   }
 
-  function applyGuard(cell, sun, hoursFor) {
+  // Writes only. Every rect and every computed fill this needs was already taken in
+  // measureColumn, so nothing in here can force a layout.
+  //
+  // Both treatments live in one pass because they are the same argument from two ends.
+  // Making a block see-through moves it toward the sky; the ring is what gives it an edge
+  // again. Doing them apart would mean measuring the same surface twice and ringing
+  // against a fill that is no longer what is on screen.
+  function applyGuard(sun, hoursFor, m, cfg) {
     const anchors = anchorsFor(sun);
     const plateAt = plateAtFor(sun);
-    const H = cell.getBoundingClientRect().height || 1;
-    const top = cell.getBoundingClientRect().top;
-    cell.querySelectorAll('[data-eventid]').forEach(ev => {
-      const r = ev.getBoundingClientRect();
-      if (r.height < 6) return;
-      const hour = Math.max(0, Math.min(24, ((r.top + r.height / 2) - top) / H * 24));
-      const fill = getComputedStyle(ev).backgroundColor;
-      const surface = S.surfaceAt(hour, hoursFor, anchors, plateAt);
-      const out = S.ringFor(fill, surface);
-      guardStats.checked++;
-      if (out) {
-        ev.style.boxShadow = `inset 0 0 0 1px ${out.ring}`;
-        ev.dataset.skyRing = '1';
-        guardStats.ringed++;
-        guardStats.worst = Math.min(guardStats.worst, out.before);
-      } else if (ev.dataset.skyRing) {
-        ev.style.boxShadow = ''; delete ev.dataset.skyRing;
+    const surfaceAt = m.surfaceAt || (m.surfaceAt = surfaceCache(hoursFor, anchors, plateAt));
+    // High contrast mode has its own opinion about colour and it outranks ours.
+    const level = forcedColors() ? 'off' : (GLASS[cfg.glass] != null ? cfg.glass : 'off');
+    const wanted = GLASS[level];
+    const outlined = level === 'outline';
+    const edgeFloor = EDGE_FLOOR[level], edgePx = EDGE_PX[level];
+    for (const e of m.events) {
+      if (e.height < 6) continue;
+      const hour = Math.max(0, Math.min(24, (e.top + e.bottom) / 2));
+      const surface = surfaceAt(hour);
+
+      // ---- see-through ---------------------------------------------------------------
+      const glass = wanted < 1 ? S.glassFor(e.fill, e.ink, surface, wanted, outlined) : null;
+      let shown = null;
+      if (glass) {
+        e.el.style.backgroundColor = glass.css;
+        // Read back rather than assume: the browser normalises the string it stores, and
+        // this is the value the staleness check compares against on the next pass.
+        e.stock.applied = e.el.style.backgroundColor;
+        e.el.dataset.skyGlass = '1';
+        // The label is only touched when the solver actually had to move it. Google gives
+        // a chip's title and its time two different weights of the same colour, and
+        // forcing the inside of every block to inherit one colour would flatten that
+        // everywhere to fix it in the few places it breaks.
+        if (glass.flipped) {
+          e.el.style.color = glass.ink;
+          e.el.dataset.skyInk = '1';
+          pinDecoration(e.el, e.stock.ink);
+        } else if (e.el.dataset.skyInk) {
+          e.el.style.color = e.stock.inlineInk;
+          unpin(e.el);
+          delete e.el.dataset.skyInk;
+        }
+        shown = glass.back;
+        guardStats.glassed++;
+        guardStats.clearest = Math.min(guardStats.clearest, glass.alpha);
+      } else if (e.el.dataset.skyGlass) {
+        unglass(e.el);
       }
-    });
+
+      // ---- the edge --------------------------------------------------------------------
+      // Two different jobs, and conflating them is what put a hard dark line round every
+      // block. With the fill see-through, the edge is deliberate and in the event's own
+      // colour, on every block. With the fill left alone, the edge is the old separation
+      // guard: an emergency, and it stays rare.
+      guardStats.checked++;
+      if (glass) {
+        // Google's own border stays opaque while the fill goes translucent unless it is
+        // taken in hand, and that alone reads as a hard outline the extension never asked
+        // for. Ours replaces it rather than sitting on top of it.
+        const edge = S.edgeFor(e.fill, surface, edgeFloor);
+        e.el.style.borderColor = 'transparent';
+        e.el.style.boxShadow = `inset 0 0 0 ${edgePx}px ${edge}`;
+        e.el.dataset.skyRing = '1';
+        guardStats.ringed++;
+      } else {
+        const out = S.ringFor(e.fill, surface, shown);
+        if (out) {
+          e.el.style.boxShadow = `inset 0 0 0 1px ${out.ring}`;
+          e.el.dataset.skyRing = '1';
+          guardStats.ringed++;
+          guardStats.worst = Math.min(guardStats.worst, out.before);
+        } else if (e.el.dataset.skyRing) {
+          e.el.style.boxShadow = e.stock.inlineShadow; delete e.el.dataset.skyRing;
+        }
+      }
+    }
   }
 
   // The contextual layer. Google's own column header is the only place with room for a
@@ -521,24 +853,62 @@
         h.appendChild(el);
       }
       const hi = Math.round(day.hi), lo = Math.round(day.lo);
-      el.innerHTML = `<span class="${TAG}-hi">${hi}\u00B0</span>`
-                   + `<span class="${TAG}-lo">${lo}\u00B0</span>`;
+      const next = `${hi}/${lo}`;
+      if (el.dataset.v !== next) {                    // rewriting this every repaint is churn
+        el.innerHTML = `<span class="${TAG}-hi">${hi}\u00B0</span>`
+                     + `<span class="${TAG}-lo">${lo}\u00B0</span>`;
+        el.dataset.v = next;
+      }
       n++;
     });
     return n;
   }
 
   // ---------------------------------------------------------------- lifecycle
-  let state = { forecast: null, location: null, painting: false, cfg: null, cols: [], colMeta: [] };
+  let state = { forecast: null, location: null, painting: false, cfg: null, cols: [], colMeta: [],
+                pending: null, rectsDirty: true, watchedGrid: null,
+                misses: 0, errors: 0, tearingDown: false, pendingUrgent: false };
 
-  async function render(reason) {
-    if (state.painting) return;
+  // The window is not the only thing that resizes. Collapsing Google's sidebar, or
+  // changing its display density, moves the columns without touching the window and
+  // without producing a mutation. Attached in render, which has just found the grid
+  // anyway, rather than polled for it.
+  const gridResize = window.ResizeObserver
+    ? new ResizeObserver(() => { state.rectsDirty = true; schedule('grid resize'); })
+    : null;
+  function watchGrid(grid) {
+    if (!gridResize || state.watchedGrid === grid) return;
+    gridResize.disconnect();
+    gridResize.observe(grid);
+    state.watchedGrid = grid;
+  }
+
+  async function render(reason, urgent) {
+    // Dropping a request while a paint is in flight loses it. Remember it instead and
+    // run exactly once more afterwards, which coalesces a burst into a single repaint.
+    // Coalescing has to carry the urgency with it. Losing that was worth a hundred
+    // milliseconds: a repaint asked for on the next frame, arriving while another was
+    // already in flight, came back through the ordinary debounce, and the sky stayed
+    // missing for the whole of it.
+    if (state.painting) { state.pending = reason; state.pendingUrgent ||= !!urgent; return; }
     state.painting = true;
     try {
+      // A miss is not the same as a view change. Editing or dragging an event puts the
+      // grid through states where there is momentarily no gridcell over 500px tall, and
+      // tearing the whole layer down for one of those and rebuilding it a frame later is
+      // exactly the flash that gets reported. Stand down only once it has been gone for
+      // several consecutive attempts; the sky lives inside the gridcells, so if they have
+      // really gone then so has it, and nothing is left behind in the meantime.
       const grid = findGrid();
-      if (!grid) { log('no timed grid in this view, standing down'); unmount(); return; }
-      const cols = findColumns(grid);
-      if (!cols.length) { unmount(); return; }
+      const cols = grid ? findColumns(grid) : [];
+      if (!grid || !cols.length) {
+        if (++state.misses < 4) { schedule('grid not measurable yet'); return; }
+        log('no timed grid in this view, standing down');
+        unmount();
+        return;
+      }
+      state.misses = 0;
+      watchGrid(grid);
 
       state.cfg = await S.settings();
       if (!state.cfg.enabled) { log('weather layer is off'); unmount(); return; }
@@ -555,87 +925,251 @@
       }
 
       const { dates, method, datekeySample } = columnDates(cols);
-      const hourPx = cols[0].getBoundingClientRect().height / 24;
+      // Read everything first, write everything second. Splitting the passes is the whole
+      // point: no write in the second pass can be forced back through layout by a read.
+      const measured = cols.map(measureColumn);
+      const hourPx = measured[0].H / 24;
       let painted = 0;
-      guardStats = { checked: 0, ringed: 0, worst: 99 };
+      guardStats = { checked: 0, ringed: 0, worst: 99, glassed: 0, clearest: 1 };
       state.colMeta = [];
       cols.forEach((c, i) => {
-        if (paintColumn(c, dates[i], state.forecast, state.location)) painted++;
-        state.colMeta.push({ cell: c, date: dates[i] });
+        if (paintColumn(c, dates[i], state.forecast, state.location, measured[i])) painted++;
+        state.colMeta.push({ cell: c, date: dates[i], rect: measured[i].box });
       });
+      state.rectsDirty = false;
+      // Anything still held for a date that is no longer on screen is not coming back.
+      for (const date of [...orphanage.keys()]) if (!dates.includes(date)) orphanage.delete(date);
       const heads = paintHeaders(dates, state.forecast);
+      mountFlyers(cols, dates);
+      state.errors = 0;
 
       log(`${reason} · ${painted}/${cols.length} columns · ${heads} headers · ${dates[0]}…${dates[dates.length - 1]}`,
           `· ${hourPx.toFixed(1)}px/hour · dates via ${method}`,
           datekeySample !== undefined ? `· datekey sample ${datekeySample}` : '',
           `· forecast ${state.forecast.source} · ${state.location.label} · ${S.units()}`,
           `· guard ${guardStats.ringed}/${guardStats.checked} ringed`
+            + (guardStats.glassed ? `, ${guardStats.glassed} see-through to ${guardStats.clearest}` : '')
             + (guardStats.checked === 0 ? ' (no events in DOM yet)' : '')
             + (guardStats.worst < 99 ? ` (worst was ${guardStats.worst}:1)` : ''));
     } catch (err) {
-      console.warn('[sky] render failed, removing layer', err);
-      unmount();
-    } finally { state.painting = false; }
+      // Same argument. One failed paint in the middle of Google rearranging its own DOM
+      // is not a reason to take the sky away from someone; a run of them is.
+      console.warn('[sky] render failed', err);
+      if (++state.errors >= 3) { console.warn('[sky] repeated failures, removing layer'); unmount(); }
+      else schedule('retry after failure');
+    } finally {
+      state.painting = false;
+      if (state.pending) {
+        const r = state.pending, now = state.pendingUrgent;
+        state.pending = null; state.pendingUrgent = false;
+        if (now) scheduleNow(r); else schedule(r);
+      }
+    }
+  }
+
+  // The focus band is the only thing that moves without anything else changing, and it is
+  // one gradient string per column. A minute tick used to run the whole painter for it.
+  function updateFocus() {
+    for (const { cell, date } of state.colMeta) {
+      const field = cell.querySelector(`:scope > .${TAG}-field`);
+      if (!field) return schedule('tick, layer gone');
+      const rec = painted.get(field);
+      const next = buildFocus(date);
+      if (rec && rec.focus === next) continue;
+      field.querySelector(`.${TAG}-focus`).style.background = next;
+      if (rec) rec.focus = next;
+    }
   }
 
   function unmount() {
-    document.querySelectorAll(`.${TAG}-field, .${TAG}-temp`).forEach(n => n.remove());
-    document.querySelectorAll('[data-sky-ring]').forEach(n => { n.style.boxShadow = ''; delete n.dataset.skyRing; });
+    state.tearingDown = true;
+    document.querySelectorAll(`.${TAG}-field, .${TAG}-temp, .${TAG}-flyers`).forEach(n => n.remove());
+    document.querySelectorAll('[data-sky-ring]').forEach(n => {
+      const st = stock.get(n);
+      n.style.boxShadow = st ? st.inlineShadow : '';
+      delete n.dataset.skyRing;
+    });
+    document.querySelectorAll('[data-sky-glass]').forEach(unglass);
+    document.querySelectorAll('[data-sky-pin]').forEach(n => { n.style.color = ''; delete n.dataset.skyPin; });
+    if (S.stopFlyers) S.stopFlyers();
     if (S.hidePopover) S.hidePopover();
+    if (gridResize) { gridResize.disconnect(); state.watchedGrid = null; }
+    orphanage.clear();
+    state.colMeta = [];
+    // Cleared on a later task, because the observer delivers our own removals after this
+    // returns and would otherwise read them as Google taking the sky away.
+    setTimeout(() => { state.tearingDown = false; }, 0);
   }
 
-  let timer = null;
-  const schedule = (reason) => { clearTimeout(timer); timer = setTimeout(() => render(reason), 120); };
+  function mountFlyers(cols, dates) {
+    if (!S.startFlyers) return;
+    const cfg = state.cfg || S.DEFAULTS;
+    const row = cols[0].parentElement;
+    if (!row || !cols.every(c => c.parentElement === row)) return S.stopFlyers();
+    S.startFlyers(row, {
+      cfg, dates,
+      hourlyAt: (date, h) => state.forecast?.hourly?.[`${date}T${String(Math.max(0, Math.min(23, Math.round(h)))).padStart(2, '0')}:00`] || null,
+      sunFor: date => {
+        const day = state.forecast?.daily?.[date];
+        return day ? S.solarDay(date, day.sunrise, day.sunset, state.location.lat, state.location.lon)
+                   : S.solarDayComputed(date, state.location.lat, state.location.lon);
+      }
+    });
+  }
+
+  let timer = null, urgentFrame = 0;
+  const schedule = (reason) => { clearTimeout(timer); timer = setTimeout(() => render(reason), 180); };
+
+  // Google replacing a day column takes our field down with it, because the field is a
+  // child of the column. Waiting out the ordinary debounce to notice leaves the sky
+  // visibly absent for the better part of two hundred milliseconds, which is the flash
+  // people see when they move an event. This repaints on the very next frame instead.
+  const scheduleNow = (reason) => {
+    clearTimeout(timer);
+    cancelAnimationFrame(urgentFrame);
+    urgentFrame = requestAnimationFrame(() => render(reason, true));
+  };
   // Google paints the grid before it paints the events, so the first pass measures an
   // empty column and the guard has nothing to check. Come back once things have settled.
   const settle = () => { setTimeout(() => render('settle'), 700); setTimeout(() => render('settle'), 2200); };
 
+  // Cheap enough to run inside a MutationObserver callback that fires hundreds of times a
+  // minute: no allocation, no spread, no closure per record.
+  function ours(n) {
+    if (!n || n.nodeType !== 1) return true;              // text nodes are not interesting
+    const c = n.className;
+    return typeof c === 'string' && c.startsWith(TAG);
+  }
+  function ourMutation(m) {
+    if (!ours(m.target)) {
+      for (let i = 0; i < m.addedNodes.length; i++)   if (!ours(m.addedNodes[i]))   return false;
+      for (let i = 0; i < m.removedNodes.length; i++) if (!ours(m.removedNodes[i])) return false;
+      return m.addedNodes.length + m.removedNodes.length > 0;
+    }
+    return true;
+  }
+
+  // Did this mutation carry away a piece of sky we had already painted? A removed column
+  // has our field inside it, so the question is about the subtree, not the node.
+  // Put the rescued fields straight into the replacement columns, here, in the same task
+  // as the removal. Waiting for the repaint on the next frame leaves one frame drawn
+  // without a sky, and one frame is the whole of what a flash is. Datekeys only: no
+  // geometry is read, so this cannot force a layout in the middle of Google's own work.
+  function reseat() {
+    if (!orphanage.size) return;
+    const main = document.querySelector('[role="main"]');
+    if (!main) return;
+    for (const cell of main.querySelectorAll('[role="gridcell"]')) {
+      if (cell.querySelector(`:scope > .${TAG}-field`)) continue;
+      const date = dateOfCell(cell);
+      if (!date || !orphanage.has(date)) continue;
+      const f = orphanage.get(date);
+      orphanage.delete(date);
+      cell.style.position = 'relative';
+      cell.insertBefore(f, cell.firstChild);
+    }
+  }
+
+  function tookTheSky(m) {
+    let took = false;
+    for (let i = 0; i < m.removedNodes.length; i++) {
+      const n = m.removedNodes[i];
+      if (n.nodeType !== 1) continue;
+      if (rescueSky(n)) took = true;
+    }
+    return took;
+  }
+
   function observe() {
     const root = document.querySelector('[role="main"]') || document.body;
     new MutationObserver(muts => {
-      // Ignore our own nodes, or we loop.
-      if (muts.every(m => [...m.addedNodes, ...m.removedNodes]
-          .every(n => n.nodeType === 1 && n.className?.toString().startsWith(TAG)))) return;
-      if (muts.every(m => m.target?.className?.toString?.().startsWith(TAG))) return;
-      schedule('dom change');
+      let interesting = false, took = false;
+      // Every record, not just as far as the first interesting one. Google replaces seven
+      // day columns as seven separate mutations, and bailing out on the first meant six
+      // fields were never rescued and had to be built again from nothing.
+      for (let i = 0; i < muts.length; i++) {
+        // Our own unmount removes fields on purpose, and must not be answered by putting
+        // them straight back.
+        if (!state.tearingDown && tookTheSky(muts[i])) took = true;
+        else if (!interesting && !ourMutation(muts[i])) interesting = true;
+      }
+      if (took) { reseat(); scheduleNow('sky was taken down'); }
+      else if (interesting) schedule('dom change');
     }).observe(root, { childList: true, subtree: true });
 
+    // The grid scrolls under the cursor, so cached column rectangles go stale without any
+    // mutation at all. Mark them rather than re-reading: the next hover pays for it.
+    const stale = () => { state.rectsDirty = true; };
+    addEventListener('scroll', stale, { passive: true, capture: true });
+
+    // A resize changes the column width and height, which the sky is a function of, and
+    // it produces no mutation at all -- so watching the DOM was never going to catch it.
+    // Cloud widths, star positions and the size of the sun all come from those numbers.
+    addEventListener('resize', () => { stale(); schedule('resize'); }, { passive: true });
+
+    // A changed path is a reason to look again, not a reason to tear down. Opening an
+    // event editor changes the path and comes straight back; unmounting on the way out
+    // and rebuilding on the way in is two flashes for something the user experiences as
+    // one click. If the view really has changed, the miss counter above stands us down.
     let last = location.pathname;
-    setInterval(() => { if (location.pathname !== last) { last = location.pathname; unmount(); schedule('view change'); } }, 400);
+    setInterval(() => {
+      if (location.pathname !== last) { last = location.pathname; schedule('view change'); }
+    }, 400);
     setInterval(() => { state.forecast = null; schedule('forecast refresh'); }, 15 * 60 * 1000);
-    setInterval(() => schedule('tick'), 60 * 1000);   // the focus band moves, nothing else
+    setInterval(updateFocus, 60 * 1000);   // the focus band moves, and nothing else does
   }
 
   // Geometry only. No hit testing, no pointer capture, nothing that could interfere with
   // Google's drag-to-create on the grid.
-  function resolvePoint(x, y) {
+  //
+  // Split in two, because the whole of it used to run on every mousemove: which column,
+  // which hour, then the full solar day (three forty-step binary searches) and the
+  // composited surface colour, several dozen times a second, to answer a question whose
+  // answer only changes when the cursor crosses an hour line. Now the move path is four
+  // comparisons against cached rectangles, and the expensive half runs once, when the
+  // popover is actually about to be drawn.
+  function hitPoint(x, y) {
     const cfg = state.cfg || S.DEFAULTS;
     if (!cfg.enabled || cfg.detail !== 'hover' || !state.forecast) return null;
-    for (const { cell, date } of state.colMeta) {
-      const r = cell.getBoundingClientRect();
-      if (x < r.left || x > r.right || y < r.top || y > r.bottom) continue;
+    if (state.rectsDirty) {
+      for (const c of state.colMeta) c.rect = c.cell.getBoundingClientRect();
+      state.rectsDirty = false;
+    }
+    for (const { date, rect: r } of state.colMeta) {
+      if (!r || x < r.left || x > r.right || y < r.top || y > r.bottom) continue;
       const hour = Math.max(0, Math.min(23.999, ((y - r.top) / r.height) * 24));
-      const hh = String(Math.floor(hour)).padStart(2, '0');
-      const d = state.forecast.hourly?.[`${date}T${hh}:00`];
-      if (!d) return null;
-      const day = state.forecast.daily?.[date];
-      const sun = day ? S.solarDay(date, day.sunrise, day.sunset, state.location.lat, state.location.lon)
-                      : S.solarDayComputed(date, state.location.lat, state.location.lon);
-      const anchors = anchorsFor(sun), plateAt = plateAtFor(sun);
-      const hoursFor = h => state.forecast.hourly?.[`${date}T${String(Math.max(0, Math.min(23, Math.round(h)))).padStart(2, '0')}:00`] || null;
-      const surf = S.surfaceAt(hour, hoursFor, anchors, plateAt);
-      const dt = new Date(date + 'T12:00:00');
-      return {
-        date, hour: Math.floor(hour), d, sun,
-        unit: S.units(),
-        skyColour: S.colour.toHex(surf),
-        dayLabel: dt.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })
-      };
+      return { date, hour };
     }
     return null;
   }
 
+  function describePoint(hit) {
+    if (!hit || !state.forecast) return null;
+    const { date, hour } = hit;
+    const hh = String(Math.floor(hour)).padStart(2, '0');
+    const d = state.forecast.hourly?.[`${date}T${hh}:00`];
+    if (!d) return null;
+    const day = state.forecast.daily?.[date];
+    const sun = day ? S.solarDay(date, day.sunrise, day.sunset, state.location.lat, state.location.lon)
+                    : S.solarDayComputed(date, state.location.lat, state.location.lon);
+    const anchors = anchorsFor(sun), plateAt = plateAtFor(sun);
+    const hoursFor = h => state.forecast.hourly?.[`${date}T${String(Math.max(0, Math.min(23, Math.round(h)))).padStart(2, '0')}:00`] || null;
+    const surf = S.surfaceAt(hour, hoursFor, anchors, plateAt);
+    const dt = new Date(date + 'T12:00:00');
+    return {
+      date, hour: Math.floor(hour), d, sun,
+      unit: S.units(),
+      skyColour: S.colour.toHex(surf),
+      dayLabel: dt.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })
+    };
+  }
+
+  const resolvePoint = (x, y) => describePoint(hitPoint(x, y));
+
   S.render = render; S.unmount = unmount;
+  // Throw the cached forecast away and redraw from a fresh one. The fifteen-minute timer
+  // does this on its own; this is for when you want it now.
+  S.refresh = async () => { state.forecast = null; await render('manual refresh'); };
   S.setUnits    = async u => { await S.saveSettings({ units: u === 'f' ? 'f' : u === 'c' ? 'c' : 'auto' }); };
   S.setLocation = async (lat, lon, label) => {
     await S.saveSettings({ lat: Math.round(lat * 100) / 100, lon: Math.round(lon * 100) / 100,
@@ -643,10 +1177,63 @@
   };
   S.settingsNow = () => state.cfg;
 
+  // Everything that could be drawing a line on an event block: the block itself, every
+  // descendant, both pseudo-elements, plus what we did to it and what Google had there
+  // first. Run it on a calendar that is showing the problem and it says which layer owns
+  // the pixels, instead of me guessing at it from a screenshot.
+  // Content scripts run in an isolated world, so __SkyCal is not reachable from the
+  // console's default `top` context and asking someone to find the context dropdown is a
+  // poor way to collect a bug report. DOM events and DOM attributes are shared between
+  // the worlds, so this bridges it: dispatch, then read the attribute.
+  //
+  //   document.dispatchEvent(new Event('skycal:diagnose'));
+  //   copy(document.documentElement.dataset.skyDiagnosis)
+  document.addEventListener('skycal:diagnose', () => {
+    try {
+      document.documentElement.dataset.skyDiagnosis = JSON.stringify(S.diagnose(), null, 2);
+    } catch (err) {
+      document.documentElement.dataset.skyDiagnosis = 'diagnose failed: ' + err;
+    }
+  });
+
+  S.diagnose = function (el) {
+    el = el || document.querySelector('[role="gridcell"] [data-eventid]');
+    if (!el) return 'no event block found in a timed column';
+    const paint = n => {
+      const c = getComputedStyle(n);
+      const out = {
+        tag: n.tagName.toLowerCase() + (n === el ? ' (the block)' : ''),
+        bg: c.backgroundColor,
+        bgImage: c.backgroundImage === 'none' ? undefined : c.backgroundImage,
+        border: [c.borderTopWidth, c.borderRightWidth, c.borderBottomWidth, c.borderLeftWidth].join(' '),
+        borderColor: c.borderTopColor + ' | ' + c.borderBottomColor,
+        boxShadow: c.boxShadow === 'none' ? undefined : c.boxShadow,
+        outline: c.outlineStyle === 'none' ? undefined : `${c.outlineWidth} ${c.outlineStyle} ${c.outlineColor}`,
+        size: `${n.offsetWidth}x${n.offsetHeight}`,
+        color: c.color
+      };
+      for (const pseudo of ['::before', '::after']) {
+        const q = getComputedStyle(n, pseudo);
+        if (q.content && q.content !== 'none')
+          out[pseudo] = { content: q.content, bg: q.backgroundColor, height: q.height,
+                          bottom: q.bottom, border: q.borderBottomWidth + ' ' + q.borderBottomColor };
+      }
+      return out;
+    };
+    return {
+      ours: { glass: el.dataset.skyGlass || null, ring: el.dataset.skyRing || null,
+              ink: el.dataset.skyInk || null },
+      stock: S.stockOf(el),
+      block: paint(el),
+      children: [...el.querySelectorAll('*')].slice(0, 8).map(paint),
+      settings: state.cfg && { glass: state.cfg.glass, intensity: state.cfg.intensity }
+    };
+  };
+
   (async () => {
     const cfg = await S.settings();
     S.popoverEnabled = cfg.enabled && cfg.detail === 'hover';
-    S.enablePopover(resolvePoint);
+    S.enablePopover(hitPoint, describePoint);
   })();
 
   S.onSettingsChanged(cfg => {

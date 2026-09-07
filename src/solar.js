@@ -38,9 +38,28 @@
     return (lo + hi) / 2;
   }
 
+  // Every solar moment costs a forty-step binary search over altitude(), and a day's
+  // answer never changes. The hover popover asked for it on every mousemove, which is
+  // roughly a hundred and twenty altitude solves per pointer event. Memoise on the only
+  // things the answer depends on.
+  const cache = new Map();
+  function memo(key, compute) {
+    const hit = cache.get(key);
+    if (hit !== undefined) return hit;
+    const val = compute();
+    if (cache.size > 400) cache.clear();          // a fortnight of columns, then start over
+    cache.set(key, val);
+    return val;
+  }
+  S.clearSolarCache = () => cache.clear();
+
   // All solar moments for one local day, as hours since local midnight.
   // sunriseISO / sunsetISO come from the forecast and are treated as authoritative.
   S.solarDay = function (dateISO, sunriseISO, sunsetISO, lat, lon) {
+    return memo(`d|${dateISO}|${sunriseISO}|${sunsetISO}|${lat}|${lon}`,
+                () => solarDayUncached(dateISO, sunriseISO, sunsetISO, lat, lon));
+  };
+  function solarDayUncached(dateISO, sunriseISO, sunsetISO, lat, lon) {
     const dayStart = new Date(dateISO + 'T00:00:00');
     const hoursOf = iso => { const d = new Date(iso); return d.getHours() + d.getMinutes() / 60 + d.getSeconds() / 3600; };
     const sunrise = hoursOf(sunriseISO);
@@ -53,11 +72,14 @@
       civilDusk: crossing(dayStart, lat, lon, -6, sunset, Math.min(24, sunset + 2)) ?? sunset + 0.57,
       daylight:  sunset - sunrise
     };
-  };
+  }
 
   // Sunrise and sunset solved directly from altitude, for dates outside the forecast
   // window. Sun disc centre at -0.833 degrees, which is the standard refraction allowance.
   S.solarDayComputed = function (dateISO, lat, lon) {
+    return memo(`c|${dateISO}|${lat}|${lon}`, () => solarDayComputedUncached(dateISO, lat, lon));
+  };
+  function solarDayComputedUncached(dateISO, lat, lon) {
     const dayStart = new Date(dateISO + 'T00:00:00');
     const sunrise = crossing(dayStart, lat, lon, -0.833, 1, 12);
     const sunset  = crossing(dayStart, lat, lon, -0.833, 12, 23.5);
@@ -71,7 +93,7 @@
       daylight:  sunset - sunrise,
       computed:  true
     };
-  };
+  }
 
   S.altitude = altitude;
 })();

@@ -6,3 +6,6 @@ node_modules/
 .r[0-9]*.png
 .pop*.png
 .pv*.png
+
+# Screenshots taken while testing. The harness is the artefact, not the pictures.
+test/shots/

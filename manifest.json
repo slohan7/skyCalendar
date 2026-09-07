@@ -21,8 +21,10 @@
         "src/wmo.js",
         "src/palette.js",
         "src/solar.js",
+        "src/lunar.js",
         "src/guard.js",
         "src/weather.js",
+        "src/flyers.js",
         "src/popover.js",
         "src/content.js"
       ],
@@ -35,5 +37,15 @@
   "action": {
     "default_popup": "popup/popup.html",
     "default_title": "Sky"
-  }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "fonts/*.woff2"
+      ],
+      "matches": [
+        "https://calendar.google.com/*"
+      ]
+    }
+  ]
 }
