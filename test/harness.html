@@ -15,6 +15,14 @@
   .viewport { height: 100%; overflow-y: auto; }
   [role="row"] { display: flex; padding-left: 56px; height: 1200px; position: relative; }
   [role="gridcell"] { flex: 1; position: relative; border-left: 1px solid #dadce0; }
+  /* Google draws small decorative parts of a chip with currentColor -- rules, bars,
+     spacers, icon strokes. This is one, and it is here because a blanket
+     "[data-sky-ink] * { color: inherit }" repaints it with the label's colour, which puts
+     a dark line across the bottom of every block. */
+  .ev .bar {
+    position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
+    background: currentColor; opacity: .55;
+  }
   .ev {
     position: absolute; z-index: 5; left: 2px; right: 6px;
     border-radius: 4px; padding: 2px 4px; color: #fff; font-size: 11px;
@@ -111,6 +119,7 @@ function seedEvents(perDay = 6) {
       ev.style.color = INK[fill];
       ev.style.borderColor = fill;
       ev.textContent = 'Meeting';
+      ev.appendChild(Object.assign(document.createElement('i'), { className: 'bar' }));
       // The harness knows what it drew. That is the independent source of truth the
       // legibility check measures against -- it never asks the extension what it started
       // from, because that is the thing being tested.

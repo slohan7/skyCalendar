@@ -492,6 +492,29 @@
     }
     return s;
   }
+  // Anything drawing with currentColor follows the chip's colour by ordinary inheritance,
+  // so moving the label moves the decoration with it -- which is what put a dark bar
+  // across the bottom of every block. No stylesheet rule can prevent that, because the
+  // decoration is not overriding anything: it is inheriting, correctly, from a colour we
+  // changed. The only fix is to say what those elements should be instead.
+  //
+  // An element with no children at all is a rule, a bar, a spacer. Text is what should
+  // follow the label; decoration keeps the colour Google gave it. One that already has
+  // its own inline colour is already pinned and is left alone.
+  function pinDecoration(el, stockInk) {
+    for (const n of el.querySelectorAll('*:empty')) {
+      if (n.style.color) continue;
+      n.style.color = stockInk;
+      n.dataset.skyPin = '1';
+    }
+  }
+  function unpin(el) {
+    el.querySelectorAll('[data-sky-pin]').forEach(n => {
+      n.style.color = '';                    // only ever set where there was nothing
+      delete n.dataset.skyPin;
+    });
+  }
+
   function unglass(el) {
     const s = stock.get(el);
     if (s) {
@@ -500,6 +523,7 @@
       el.style.borderColor = s.inlineBorder;
       s.applied = el.style.backgroundColor;
     }
+    unpin(el);
     delete el.dataset.skyGlass;
     delete el.dataset.skyInk;
   }
@@ -742,8 +766,15 @@
         // a chip's title and its time two different weights of the same colour, and
         // forcing the inside of every block to inherit one colour would flatten that
         // everywhere to fix it in the few places it breaks.
-        if (glass.flipped) { e.el.style.color = glass.ink; e.el.dataset.skyInk = '1'; }
-        else if (e.el.dataset.skyInk) { e.el.style.color = e.stock.inlineInk; delete e.el.dataset.skyInk; }
+        if (glass.flipped) {
+          e.el.style.color = glass.ink;
+          e.el.dataset.skyInk = '1';
+          pinDecoration(e.el, e.stock.ink);
+        } else if (e.el.dataset.skyInk) {
+          e.el.style.color = e.stock.inlineInk;
+          unpin(e.el);
+          delete e.el.dataset.skyInk;
+        }
         shown = glass.back;
         guardStats.glassed++;
         guardStats.clearest = Math.min(guardStats.clearest, glass.alpha);
@@ -908,6 +939,7 @@
       delete n.dataset.skyRing;
     });
     document.querySelectorAll('[data-sky-glass]').forEach(unglass);
+    document.querySelectorAll('[data-sky-pin]').forEach(n => { n.style.color = ''; delete n.dataset.skyPin; });
     if (S.stopFlyers) S.stopFlyers();
     if (S.hidePopover) S.hidePopover();
     if (gridResize) { gridResize.disconnect(); state.watchedGrid = null; }
@@ -1040,6 +1072,21 @@
   // descendant, both pseudo-elements, plus what we did to it and what Google had there
   // first. Run it on a calendar that is showing the problem and it says which layer owns
   // the pixels, instead of me guessing at it from a screenshot.
+  // Content scripts run in an isolated world, so __SkyCal is not reachable from the
+  // console's default `top` context and asking someone to find the context dropdown is a
+  // poor way to collect a bug report. DOM events and DOM attributes are shared between
+  // the worlds, so this bridges it: dispatch, then read the attribute.
+  //
+  //   document.dispatchEvent(new Event('skycal:diagnose'));
+  //   copy(document.documentElement.dataset.skyDiagnosis)
+  document.addEventListener('skycal:diagnose', () => {
+    try {
+      document.documentElement.dataset.skyDiagnosis = JSON.stringify(S.diagnose(), null, 2);
+    } catch (err) {
+      document.documentElement.dataset.skyDiagnosis = 'diagnose failed: ' + err;
+    }
+  });
+
   S.diagnose = function (el) {
     el = el || document.querySelector('[role="gridcell"] [data-eventid]');
     if (!el) return 'no event block found in a timed column';

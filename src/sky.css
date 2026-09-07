@@ -459,12 +459,19 @@
 }
 
 /* ---- see-through events --------------------------------------------------- */
-/* Only blocks whose label the solver actually had to flip, and only for colour. Google
-   colours a chip and lets the inside inherit, but some chips give the time its own
-   lighter shade of the same colour -- which stops meaning "lighter" the moment the
-   colour above it has moved to the other end of the scale. */
+/* Only blocks whose label the solver actually had to flip, only for colour, and only on
+   things that carry something. Google colours a chip and lets the inside inherit, but
+   some chips give the time its own lighter shade of the same colour -- which stops
+   meaning "lighter" the moment the colour above it has moved to the other end of the
+   scale. That is what this rule is for.
+   
+   `:not(:empty)` is the whole fix for the black line. Google also draws small decorative
+   parts of a chip with currentColor -- rules, bars, spacers -- and an empty element is
+   what those are. Repainting them with the label's colour put a dark bar across the
+   bottom of every block, which is a far worse bug than the one this rule prevents. Text
+   follows the label; decoration keeps what Google gave it. */
 
-[data-sky-ink] * { color: inherit !important; }
+[data-sky-ink] *:not(:empty) { color: inherit !important; }
 
 /* High contrast has its own opinion about colour and it outranks ours. The solver already
    declines to run here; this is the belt to that pair of braces. */

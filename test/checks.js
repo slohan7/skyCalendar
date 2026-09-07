@@ -123,11 +123,16 @@
       $$('.skycal-flyers > *').forEach(n => n.remove());
       const got = window.__SkyCal.flyNow();
       const el = $('.skycal-flyers > .skycal-flyer:last-child');
+      const secs = el ? parseFloat(el.style.animationDuration) : null;
+      // A meteor is over in under two seconds by design; everything else crosses the
+      // whole week and takes the better part of a minute.
+      const floor = el && el.classList.contains('skycal-meteor') ? 0.5 : 15;
       const ok = got && $('.skycal-flyers').childElementCount === 1 && !!el
-              && el.getAnimations().length > 0
-              && parseFloat(el.style.animationDuration) > 15;
+              && el.getAnimations().length > 0 && secs > floor;
+      const kind = el ? (el.classList.contains('skycal-meteor') ? 'meteor'
+                       : el.classList.contains('skycal-plane') ? 'plane' : 'birds') : null;
       if (el) el.remove();
-      return { ok, seconds: el ? parseFloat(el.style.animationDuration) : null };
+      return { ok, kind, seconds: secs };
     },
 
     // The counter this replaced leaked a slot whenever a flyer left any way other than by
@@ -353,6 +358,26 @@
       const gone = $$('.skycal-moon').length;
       await h.setConfig({ moon: true });
       return { ok: wrong === 0 && gone === 0, drawn: drawn.length, wrong, offRemovesIt: gone === 0 };
+    },
+
+    // The reported "weird black line under each event". Google paints small decorative
+    // parts of a chip with currentColor, and a blanket colour: inherit on every descendant
+    // repaints them with the label -- so flipping a white label to near-black draws a dark
+    // bar across the bottom of every block. Only things that carry text should follow the
+    // label; a bar, a rule or a spacer keeps what Google gave it.
+    async 'a decorative part of a chip is not repainted with the label colour'() {
+      const C = window.__SkyCal.colour;
+      await h.setConfig({ glass: 'outline' });
+      let flipped = 0, stained = 0;
+      for (const el of $$('[data-eventid]')) {
+        const bar = el.querySelector('.bar');
+        if (!bar) continue;
+        const stock = window.__stockFill.get(el.getAttribute('data-eventid'));
+        const painted = C.toHex(C.parseRgb(getComputedStyle(bar).backgroundColor));
+        if (el.dataset.skyInk) flipped++;
+        if (painted !== stock.ink.toLowerCase()) stained++;
+      }
+      return { ok: stained === 0 && flipped > 0, labelsFlipped: flipped, barsStained: stained };
     },
 
     async 'turning the layer off leaves nothing behind'() {

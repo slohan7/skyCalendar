@@ -144,6 +144,18 @@ translucent draws a hard outline the extension never asked for. It is managed no
 transparent under glass, and put back verbatim when the layer comes off — so it cannot
 fight our edge whether or not Google set one.
 
+There was a second line, and it had a different cause. Google draws small decorative parts
+of a chip with `currentColor` — rules, bars, spacers. Those follow the chip's colour by
+ordinary inheritance, so moving the label moved the decoration with it, and flipping a
+white label to near-black painted a dark bar across the bottom of every block.
+
+No stylesheet rule prevents that, and the first attempt at one did nothing: the decoration
+is not overriding anything, it is inheriting, correctly, from a colour we changed. The only
+fix is to say what those elements should be instead. An element with no children at all is
+a rule, a bar or a spacer, so it is pinned to the colour Google gave it; text is what
+follows the label. One that already carries its own inline colour is already pinned and is
+left alone.
+
 Two things this deliberately does not do. There is no `backdrop-filter`: blurring the sky
 behind a block defeats the point of seeing it, and forty blurred layers is exactly the
 compositing cost the rest of this work went to remove. And nothing is predicted in linear
@@ -343,6 +355,14 @@ __SkyCal.diagnose()                                 // what is drawing on an eve
 
 Content scripts run in an isolated world, so switch the DevTools console context from
 `top` to **Sky for Google Calendar** to reach these.
+
+`diagnose` has a bridge for when you would rather not, since DOM events and attributes are
+shared between the two worlds. From the ordinary `top` context:
+
+```js
+document.dispatchEvent(new Event('skycal:diagnose'));
+copy(document.documentElement.dataset.skyDiagnosis)
+```
 
 ## Not built yet
 
