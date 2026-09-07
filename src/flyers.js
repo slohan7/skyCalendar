@@ -220,13 +220,22 @@
   // An empty sky refills quickly; a busy one is left alone. The whole point of the layer
   // is that something is usually moving, and a flat thirty-to-ninety-second gap meant
   // long stretches with nothing in the air at all.
+  let nextAt = 0;
   const rearm = (ms) => {
     clearTimeout(timer);
     if (ms == null) ms = live() === 0 ? rnd(700, 2400)
                        : live() === 1 ? rnd(9000, 26000)
                                       : rnd(24000, 60000);
+    nextAt = Date.now() + ms;
     timer = setTimeout(spawn, ms);
   };
+
+  // retire() is not the only way a flyer can leave. Our own teardown takes them, Google
+  // replacing the row takes them, and the delay was chosen back when the sky was busy --
+  // so an empty sky could sit there waiting out most of a minute. Cheap to just look.
+  setInterval(() => {
+    if (layer && live() === 0 && nextAt - Date.now() > 6000) rearm();
+  }, 4000);
 
   // ---------------------------------------------------------------- mounting
   // Called on every repaint, so it has to be idempotent: refresh the context, and only

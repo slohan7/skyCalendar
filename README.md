@@ -263,6 +263,45 @@ when the popover is actually about to be drawn. Solar days are memoised on top o
 **Timers that do one thing.** The minute tick moves the focus band and nothing else, so it
 writes one gradient string per column instead of running the whole painter.
 
+## Standing down, and not standing down
+
+Editing an event, or moving one, made the calendar flash and the sky vanish. Five separate
+causes, and four of them were the same mistake: treating a momentary state as a permanent
+one.
+
+`findGrid` wants a gridcell over 500px tall. Dragging an event, or opening an editor, puts
+the grid through states where briefly there is not one — and the response was to unmount
+the entire layer and rebuild it a frame later. So was a single failed paint. So was a
+changed path, which is what opening an event editor does on the way out and on the way
+back, giving two teardowns for something the user experiences as one click.
+
+None of those tear down now. A miss has to repeat four times before the layer stands down,
+a failure three times, and a changed path only asks the painter to look again. The sky
+lives inside the gridcells, so if the columns have genuinely gone then so has it, and
+nothing is left over the top of a month view in the meantime.
+
+The fifth was different. Google replaces a day column outright when an event in it changes,
+and our field is a child of that column, so it goes too — and the ordinary 180ms debounce
+meant the sky stayed visibly absent for most of that. Two things fixed it. A removed column
+still holds the field in memory at the moment the observer hears about it, so the field is
+kept and put into the replacement rather than rebuilt: thirteen hundred nodes of stars and
+cloud lobes that no longer need making, and the signature comes with it so nothing repaints
+either. And it is re-seated in the same task as the removal rather than on the next frame,
+because one frame drawn without a sky is the whole of what a flash is.
+
+Measured at frame rate, on the harness:
+
+| | before | after |
+|---|---|---|
+| Google rebuilds a day column | 179ms with no sky | **none** |
+| …and the nodes it cost | ~1100 rebuilt | 161 |
+| a render while the grid is unmeasurable | 230ms with no sky | **none** |
+| opening and closing the event editor | 222ms with no sky | **none** |
+| dragging an event | none | none |
+
+The 161 that remain are the sun's placement, the hourly temperatures and the separation
+guard, for event chips that are genuinely new. That work is real and it has to happen.
+
 ## Tests
 
 No build step and no dependencies here either. `test/harness.html` is a stand-in for

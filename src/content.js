@@ -87,18 +87,21 @@
     if (m) return new Date(+m[1], +m[2] - 1, +m[3]);
     return new Date();
   }
+  // Google's own datekey, from the cell, an ancestor or a descendant. No geometry, so it
+  // is safe to ask for this inside a MutationObserver callback.
+  function dateOfCell(c) {
+    let n = c;
+    for (let i = 0; i < 12 && n; i++, n = n.parentElement) {            // was 5, too shallow
+      const k = n.getAttribute && n.getAttribute('data-datekey');
+      if (k) { const d = decodeDatekey(k); if (d) return d; }
+    }
+    const inner = c.querySelector('[data-datekey]');                    // or on a descendant
+    if (inner) { const d = decodeDatekey(inner.getAttribute('data-datekey')); if (d) return d; }
+    return null;
+  }
+
   function columnDates(cols) {
-    // Prefer Google's own datekey wherever it is present on the cell or an ancestor.
-    const viaKey = cols.map(c => {
-      let n = c;
-      for (let i = 0; i < 12 && n; i++, n = n.parentElement) {          // was 5, too shallow
-        const k = n.getAttribute && n.getAttribute('data-datekey');
-        if (k) { const d = decodeDatekey(k); if (d) return d; }
-      }
-      const inner = c.querySelector('[data-datekey]');                   // or on a descendant
-      if (inner) { const d = decodeDatekey(inner.getAttribute('data-datekey')); if (d) return d; }
-      return null;
-    });
+    const viaKey = cols.map(dateOfCell);
     if (viaKey.every(Boolean)) return { dates: viaKey, method: 'data-datekey' };
     // Otherwise: the view's anchor date, one day per column, left to right.
     const start = anchorDate();
@@ -558,6 +561,21 @@
 
   const painted = new WeakMap();      // field element -> what is currently drawn on it
 
+  // A day column that Google has just replaced takes our field with it, and building a
+  // fresh one is thirteen hundred nodes of stars and cloud lobes -- which is most of the
+  // time the sky spends missing after an event is moved. The removed column still holds
+  // the field in memory at the moment we hear about it, so it is kept and put into the
+  // replacement instead. Its signature comes with it, so nothing is rebuilt at all.
+  const orphanage = new Map();       // date -> a field whose column was taken away
+
+  function rescueSky(node) {
+    const fields = node.classList && node.classList.contains(`${TAG}-field`)
+      ? [node]
+      : (node.querySelectorAll ? [...node.querySelectorAll(`.${TAG}-field`)] : []);
+    for (const f of fields) if (f.dataset.date) orphanage.set(f.dataset.date, f);
+    return fields.length > 0;
+  }
+
   function paintColumn(cell, date, fc, loc, m) {
     const day = fc.daily?.[date];
     // Sky first, weather second. Solar geometry is computable for any date, so a column
@@ -572,6 +590,12 @@
 
     const cfg = state.cfg || S.DEFAULTS;
     let field = cell.querySelector(`:scope > .${TAG}-field`);
+    if (!field && orphanage.has(date)) {
+      field = orphanage.get(date);
+      orphanage.delete(date);
+      if (getComputedStyle(cell).position === 'static') cell.style.position = 'relative';
+      cell.insertBefore(field, cell.firstChild);
+    }
     if (!field) {
       field = document.createElement('div');
       field.className = `${TAG}-field`;
@@ -842,7 +866,8 @@
 
   // ---------------------------------------------------------------- lifecycle
   let state = { forecast: null, location: null, painting: false, cfg: null, cols: [], colMeta: [],
-                pending: null, rectsDirty: true, watchedGrid: null };
+                pending: null, rectsDirty: true, watchedGrid: null,
+                misses: 0, errors: 0, tearingDown: false, pendingUrgent: false };
 
   // The window is not the only thing that resizes. Collapsing Google's sidebar, or
   // changing its display density, moves the columns without touching the window and
@@ -858,17 +883,32 @@
     state.watchedGrid = grid;
   }
 
-  async function render(reason) {
+  async function render(reason, urgent) {
     // Dropping a request while a paint is in flight loses it. Remember it instead and
     // run exactly once more afterwards, which coalesces a burst into a single repaint.
-    if (state.painting) { state.pending = reason; return; }
+    // Coalescing has to carry the urgency with it. Losing that was worth a hundred
+    // milliseconds: a repaint asked for on the next frame, arriving while another was
+    // already in flight, came back through the ordinary debounce, and the sky stayed
+    // missing for the whole of it.
+    if (state.painting) { state.pending = reason; state.pendingUrgent ||= !!urgent; return; }
     state.painting = true;
     try {
+      // A miss is not the same as a view change. Editing or dragging an event puts the
+      // grid through states where there is momentarily no gridcell over 500px tall, and
+      // tearing the whole layer down for one of those and rebuilding it a frame later is
+      // exactly the flash that gets reported. Stand down only once it has been gone for
+      // several consecutive attempts; the sky lives inside the gridcells, so if they have
+      // really gone then so has it, and nothing is left behind in the meantime.
       const grid = findGrid();
-      if (!grid) { log('no timed grid in this view, standing down'); unmount(); return; }
+      const cols = grid ? findColumns(grid) : [];
+      if (!grid || !cols.length) {
+        if (++state.misses < 4) { schedule('grid not measurable yet'); return; }
+        log('no timed grid in this view, standing down');
+        unmount();
+        return;
+      }
+      state.misses = 0;
       watchGrid(grid);
-      const cols = findColumns(grid);
-      if (!cols.length) { unmount(); return; }
 
       state.cfg = await S.settings();
       if (!state.cfg.enabled) { log('weather layer is off'); unmount(); return; }
@@ -897,8 +937,11 @@
         state.colMeta.push({ cell: c, date: dates[i], rect: measured[i].box });
       });
       state.rectsDirty = false;
+      // Anything still held for a date that is no longer on screen is not coming back.
+      for (const date of [...orphanage.keys()]) if (!dates.includes(date)) orphanage.delete(date);
       const heads = paintHeaders(dates, state.forecast);
       mountFlyers(cols, dates);
+      state.errors = 0;
 
       log(`${reason} · ${painted}/${cols.length} columns · ${heads} headers · ${dates[0]}…${dates[dates.length - 1]}`,
           `· ${hourPx.toFixed(1)}px/hour · dates via ${method}`,
@@ -909,11 +952,18 @@
             + (guardStats.checked === 0 ? ' (no events in DOM yet)' : '')
             + (guardStats.worst < 99 ? ` (worst was ${guardStats.worst}:1)` : ''));
     } catch (err) {
-      console.warn('[sky] render failed, removing layer', err);
-      unmount();
+      // Same argument. One failed paint in the middle of Google rearranging its own DOM
+      // is not a reason to take the sky away from someone; a run of them is.
+      console.warn('[sky] render failed', err);
+      if (++state.errors >= 3) { console.warn('[sky] repeated failures, removing layer'); unmount(); }
+      else schedule('retry after failure');
     } finally {
       state.painting = false;
-      if (state.pending) { const r = state.pending; state.pending = null; schedule(r); }
+      if (state.pending) {
+        const r = state.pending, now = state.pendingUrgent;
+        state.pending = null; state.pendingUrgent = false;
+        if (now) scheduleNow(r); else schedule(r);
+      }
     }
   }
 
@@ -932,6 +982,7 @@
   }
 
   function unmount() {
+    state.tearingDown = true;
     document.querySelectorAll(`.${TAG}-field, .${TAG}-temp, .${TAG}-flyers`).forEach(n => n.remove());
     document.querySelectorAll('[data-sky-ring]').forEach(n => {
       const st = stock.get(n);
@@ -943,7 +994,11 @@
     if (S.stopFlyers) S.stopFlyers();
     if (S.hidePopover) S.hidePopover();
     if (gridResize) { gridResize.disconnect(); state.watchedGrid = null; }
+    orphanage.clear();
     state.colMeta = [];
+    // Cleared on a later task, because the observer delivers our own removals after this
+    // returns and would otherwise read them as Google taking the sky away.
+    setTimeout(() => { state.tearingDown = false; }, 0);
   }
 
   function mountFlyers(cols, dates) {
@@ -962,8 +1017,18 @@
     });
   }
 
-  let timer = null;
+  let timer = null, urgentFrame = 0;
   const schedule = (reason) => { clearTimeout(timer); timer = setTimeout(() => render(reason), 180); };
+
+  // Google replacing a day column takes our field down with it, because the field is a
+  // child of the column. Waiting out the ordinary debounce to notice leaves the sky
+  // visibly absent for the better part of two hundred milliseconds, which is the flash
+  // people see when they move an event. This repaints on the very next frame instead.
+  const scheduleNow = (reason) => {
+    clearTimeout(timer);
+    cancelAnimationFrame(urgentFrame);
+    urgentFrame = requestAnimationFrame(() => render(reason, true));
+  };
   // Google paints the grid before it paints the events, so the first pass measures an
   // empty column and the guard has nothing to check. Come back once things have settled.
   const settle = () => { setTimeout(() => render('settle'), 700); setTimeout(() => render('settle'), 2200); };
@@ -984,14 +1049,52 @@
     return true;
   }
 
+  // Did this mutation carry away a piece of sky we had already painted? A removed column
+  // has our field inside it, so the question is about the subtree, not the node.
+  // Put the rescued fields straight into the replacement columns, here, in the same task
+  // as the removal. Waiting for the repaint on the next frame leaves one frame drawn
+  // without a sky, and one frame is the whole of what a flash is. Datekeys only: no
+  // geometry is read, so this cannot force a layout in the middle of Google's own work.
+  function reseat() {
+    if (!orphanage.size) return;
+    const main = document.querySelector('[role="main"]');
+    if (!main) return;
+    for (const cell of main.querySelectorAll('[role="gridcell"]')) {
+      if (cell.querySelector(`:scope > .${TAG}-field`)) continue;
+      const date = dateOfCell(cell);
+      if (!date || !orphanage.has(date)) continue;
+      const f = orphanage.get(date);
+      orphanage.delete(date);
+      cell.style.position = 'relative';
+      cell.insertBefore(f, cell.firstChild);
+    }
+  }
+
+  function tookTheSky(m) {
+    let took = false;
+    for (let i = 0; i < m.removedNodes.length; i++) {
+      const n = m.removedNodes[i];
+      if (n.nodeType !== 1) continue;
+      if (rescueSky(n)) took = true;
+    }
+    return took;
+  }
+
   function observe() {
     const root = document.querySelector('[role="main"]') || document.body;
     new MutationObserver(muts => {
+      let interesting = false, took = false;
+      // Every record, not just as far as the first interesting one. Google replaces seven
+      // day columns as seven separate mutations, and bailing out on the first meant six
+      // fields were never rescued and had to be built again from nothing.
       for (let i = 0; i < muts.length; i++) {
-        if (ourMutation(muts[i])) continue;
-        schedule('dom change');
-        return;
+        // Our own unmount removes fields on purpose, and must not be answered by putting
+        // them straight back.
+        if (!state.tearingDown && tookTheSky(muts[i])) took = true;
+        else if (!interesting && !ourMutation(muts[i])) interesting = true;
       }
+      if (took) { reseat(); scheduleNow('sky was taken down'); }
+      else if (interesting) schedule('dom change');
     }).observe(root, { childList: true, subtree: true });
 
     // The grid scrolls under the cursor, so cached column rectangles go stale without any
@@ -1004,8 +1107,14 @@
     // Cloud widths, star positions and the size of the sun all come from those numbers.
     addEventListener('resize', () => { stale(); schedule('resize'); }, { passive: true });
 
+    // A changed path is a reason to look again, not a reason to tear down. Opening an
+    // event editor changes the path and comes straight back; unmounting on the way out
+    // and rebuilding on the way in is two flashes for something the user experiences as
+    // one click. If the view really has changed, the miss counter above stands us down.
     let last = location.pathname;
-    setInterval(() => { if (location.pathname !== last) { last = location.pathname; unmount(); schedule('view change'); } }, 400);
+    setInterval(() => {
+      if (location.pathname !== last) { last = location.pathname; schedule('view change'); }
+    }, 400);
     setInterval(() => { state.forecast = null; schedule('forecast refresh'); }, 15 * 60 * 1000);
     setInterval(updateFocus, 60 * 1000);   // the focus band moves, and nothing else does
   }

@@ -311,7 +311,7 @@
     // is left alone.
     async 'an empty sky refills quickly'() {
       $$('.skycal-flyers > *').forEach(n => n.remove());
-      await h.settle(4000);
+      await h.settle(6000);          // the empty-sky guard runs on a four second tick
       const after = $('.skycal-flyers').childElementCount;
       return { ok: after > 0, inTheAir: after };
     },
@@ -378,6 +378,54 @@
         if (painted !== stock.ink.toLowerCase()) stained++;
       }
       return { ok: stained === 0 && flipped > 0, labelsFlipped: flipped, barsStained: stained };
+    },
+
+    // Editing or moving an event made the calendar flash and the sky vanish. Four separate
+    // paths tore the whole layer down for what was often a momentary state, and a fifth
+    // let Google take it and then waited out the ordinary debounce before noticing.
+    // Measured at frame rate, because the question is how long it is gone for.
+    async 'the sky does not disappear when Google rebuilds a column'() {
+      const w = h.watchSky(1400);
+      h.reset();
+      h.rebuildColumns();
+      const out = await w;
+      const rebuilt = h.probe().added;
+      await h.settle(500);
+      return { ok: out.longestOutageMs === 0 && rebuilt < 400 && h.fields() === 7,
+               ...out, nodesRebuilt: rebuilt, fields: h.fields() };
+    },
+
+    // A grid that cannot be measured for a few frames is not a view change.
+    async 'a momentary unmeasurable grid does not take the sky down'() {
+      const w = h.watchSky(1800);
+      const collapsing = h.collapse(200);
+      h.churn(10);
+      await window.__SkyCal.render('while unmeasurable');
+      await collapsing;
+      await h.settle(800);
+      const out = await w;
+      return { ok: out.longestOutageMs === 0 && h.fields() === 7, ...out };
+    },
+
+    // Opening an editor changes the path and comes straight back. Unmounting on the way
+    // out and rebuilding on the way in is two flashes for one click.
+    async 'opening and closing the event editor does not take the sky down'() {
+      const back = location.pathname;
+      const w = h.watchSky(2600);
+      history.pushState({}, '', '/r/eventedit/harnesstest');
+      await h.settle(700);
+      history.pushState({}, '', back);
+      await h.settle(1100);
+      const out = await w;
+      return { ok: out.longestOutageMs === 0 && h.fields() === 7, ...out };
+    },
+
+    async 'dragging an event does not take the sky down'() {
+      const w = h.watchSky(1800);
+      await h.drag(700);
+      await h.settle(600);
+      const out = await w;
+      return { ok: out.longestOutageMs === 0 && h.fields() === 7, ...out };
     },
 
     async 'turning the layer off leaves nothing behind'() {
